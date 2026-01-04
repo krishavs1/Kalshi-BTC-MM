@@ -7,7 +7,7 @@ from datetime import datetime
 from auth import get_auth_headers
 
 # Configuration
-MARKET_TICKER = "KXBTCD-26JAN0323-T91250"
+MARKET_TICKER = "KXBTCD-26JAN0323-T91249.99"
 WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
 REST_URL = f"https://api.elections.kalshi.com/trade-api/v2/markets/{MARKET_TICKER}"
 
@@ -64,16 +64,39 @@ def check_recent_trades():
             market_data = resp.json().get('market', {})
             current_price = market_data.get('last_price', 0)
             current_volume = market_data.get('volume', 0)
+        elif resp.status_code == 404:
+            if not hasattr(check_recent_trades, '_error_shown'):
+                print(f"❌ ERROR: Market {MARKET_TICKER} not found! Check the ticker.")
+                print(f"   Response: {resp.text[:200]}")
+                check_recent_trades._error_shown = True
+            return
+        else:
+            # Other errors - don't spam, but log occasionally
+            if not hasattr(check_recent_trades, '_error_count'):
+                check_recent_trades._error_count = 0
+            check_recent_trades._error_count += 1
+            if check_recent_trades._error_count % 10 == 0:  # Log every 10th error
+                print(f"⚠️  API Error {resp.status_code} (logged {check_recent_trades._error_count} times)")
+            return
             
             # Initialize on first call
             if last_price is None:
                 last_price = current_price
                 last_volume = current_volume
                 print(f"📊 Initialized tracking - Last Price: {current_price}, Volume: {current_volume}")
+                print(f"   Watching for volume/price changes...")
                 return
             
+            # Also track volume_24h for more sensitive detection
+            current_volume_24h = market_data.get('volume_24h', 0)
+            if not hasattr(check_recent_trades, '_last_volume_24h'):
+                check_recent_trades._last_volume_24h = current_volume_24h
+            
+            # Check if volume_24h changed (more reliable than total volume)
+            volume_24h_changed = current_volume_24h != check_recent_trades._last_volume_24h
+            
             # If price or volume changed, a trade occurred
-            if current_price != last_price or current_volume != last_volume:
+            if current_price != last_price or current_volume != last_volume or volume_24h_changed:
                 # Get current market state for the notification
                 trade_info = {
                     "market_ticker": MARKET_TICKER,
@@ -93,6 +116,7 @@ def check_recent_trades():
             
             last_price = current_price
             last_volume = current_volume
+            check_recent_trades._last_volume_24h = current_volume_24h
     except Exception as e:
         # Silently handle errors - don't spam on network issues
         pass

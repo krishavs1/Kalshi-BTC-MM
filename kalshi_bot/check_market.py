@@ -2,7 +2,7 @@ import requests
 import json
 from auth import get_auth_headers
 
-MARKET_TICKER = "KXBTCD-26JAN0323-T91250"
+MARKET_TICKER = "KXBTCD-26JAN0323-T91249.99"
 
 def get_market_info():
     """Fetch and display information about the specified market"""
