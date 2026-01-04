@@ -7,7 +7,7 @@ from datetime import datetime
 from auth import get_auth_headers
 
 # Configuration
-MARKET_TICKER = "KXBTCD-26JAN0323-T91249.99"
+MARKET_TICKER = "KXBTCD-26JAN0414-T91249.99"
 WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
 REST_URL = f"https://api.elections.kalshi.com/trade-api/v2/markets/{MARKET_TICKER}"
 
@@ -64,31 +64,19 @@ def check_recent_trades():
             market_data = resp.json().get('market', {})
             current_price = market_data.get('last_price', 0)
             current_volume = market_data.get('volume', 0)
-        elif resp.status_code == 404:
-            if not hasattr(check_recent_trades, '_error_shown'):
-                print(f"❌ ERROR: Market {MARKET_TICKER} not found! Check the ticker.")
-                print(f"   Response: {resp.text[:200]}")
-                check_recent_trades._error_shown = True
-            return
-        else:
-            # Other errors - don't spam, but log occasionally
-            if not hasattr(check_recent_trades, '_error_count'):
-                check_recent_trades._error_count = 0
-            check_recent_trades._error_count += 1
-            if check_recent_trades._error_count % 10 == 0:  # Log every 10th error
-                print(f"⚠️  API Error {resp.status_code} (logged {check_recent_trades._error_count} times)")
-            return
+            current_volume_24h = market_data.get('volume_24h', 0)
             
             # Initialize on first call
             if last_price is None:
                 last_price = current_price
                 last_volume = current_volume
-                print(f"📊 Initialized tracking - Last Price: {current_price}, Volume: {current_volume}")
+                if not hasattr(check_recent_trades, '_last_volume_24h'):
+                    check_recent_trades._last_volume_24h = current_volume_24h
+                print(f"📊 Initialized tracking - Last Price: {current_price}, Volume: {current_volume}, Volume 24h: {current_volume_24h}")
                 print(f"   Watching for volume/price changes...")
                 return
             
-            # Also track volume_24h for more sensitive detection
-            current_volume_24h = market_data.get('volume_24h', 0)
+            # Track volume_24h for more sensitive detection
             if not hasattr(check_recent_trades, '_last_volume_24h'):
                 check_recent_trades._last_volume_24h = current_volume_24h
             
@@ -117,9 +105,27 @@ def check_recent_trades():
             last_price = current_price
             last_volume = current_volume
             check_recent_trades._last_volume_24h = current_volume_24h
+            
+        elif resp.status_code == 404:
+            if not hasattr(check_recent_trades, '_error_shown'):
+                print(f"❌ ERROR: Market {MARKET_TICKER} not found! Check the ticker.")
+                print(f"   Response: {resp.text[:200]}")
+                check_recent_trades._error_shown = True
+            return
+        else:
+            # Other errors - don't spam, but log occasionally
+            if not hasattr(check_recent_trades, '_error_count'):
+                check_recent_trades._error_count = 0
+            check_recent_trades._error_count += 1
+            if check_recent_trades._error_count % 10 == 0:  # Log every 10th error
+                print(f"⚠️  API Error {resp.status_code} (logged {check_recent_trades._error_count} times)")
+            return
+            
     except Exception as e:
-        # Silently handle errors - don't spam on network issues
-        pass
+        # Don't spam errors, but show first error to help debug
+        if not hasattr(check_recent_trades, '_first_error_shown'):
+            print(f"⚠️  Error in check_recent_trades: {e}")
+            check_recent_trades._first_error_shown = True
 
 async def monitor_market():
     """Main function to monitor the market for order fulfillments"""
@@ -163,6 +169,13 @@ async def monitor_market():
                 if current_time - last_rest_poll >= REST_POLL_INTERVAL:
                     check_recent_trades()
                     last_rest_poll = current_time
+                    
+                    # Debug: Show we're still polling (every 10 seconds)
+                    if not hasattr(monitor_market, '_last_debug'):
+                        monitor_market._last_debug = current_time
+                    if current_time - monitor_market._last_debug >= 10:
+                        # Silent heartbeat - don't spam, just verify it's working
+                        monitor_market._last_debug = current_time
                 
                 # Check for WebSocket messages with timeout
                 try:
