@@ -15,6 +15,7 @@ seen_trades = {}
 last_trade_time = {}
 last_price = {}
 last_volume = {}
+last_orderbook = {}  # Track previous orderbook state
 
 def get_current_est_hour():
     """Get current EST time and determine the next hour for market expiration"""
@@ -161,7 +162,7 @@ def find_over_markets(range_market, date_str):
     headers = get_auth_headers('GET', '/trade-api/v2/markets')
     
     # Search for KXBTCD markets with same expiration
-    params = {'limit': 2000, 'event_ticker': f'KXBTCD-{date_str}'}
+    params = {'limit': 1000, 'event_ticker': f'KXBTCD-{date_str}'}
     
     try:
         resp = requests.get(url, headers=headers, params=params, timeout=10)
@@ -180,21 +181,28 @@ def find_over_markets(range_market, date_str):
                 and m.get('floor_strike') is not None
             ]
             
-            if greater_markets:
-                # Lower over: look for floor - 0.01 or closest to floor
-                lower_target = floor - 0.01
-                floor_over = min(greater_markets, 
-                               key=lambda x: abs(x.get('floor_strike', 0) - lower_target))
-                # Verify it's close enough (within 250)
-                if abs(floor_over.get('floor_strike') - lower_target) > 250:
-                    floor_over = None
-                
-                # Upper over: look for cap exactly or closest
-                cap_over = min(greater_markets,
-                             key=lambda x: abs(x.get('floor_strike', 0) - cap))
-                # Verify it's close enough (within 1, since it should match exactly)
-                if abs(cap_over.get('floor_strike') - cap) > 1.0:
-                    cap_over = None
+            if not greater_markets:
+                print(f"   ⚠️  No 'over X' markets found for KXBTCD-{date_str}")
+                return None, None
+            
+            # Lower over: look for floor - 0.01 or closest to floor
+            lower_target = floor - 0.01
+            floor_over = min(greater_markets, 
+                           key=lambda x: abs(x.get('floor_strike', 999999) - lower_target))
+            floor_diff = abs(floor_over.get('floor_strike') - lower_target)
+            # Verify it's close enough (within 250)
+            if floor_diff > 250:
+                print(f"   ⚠️  Closest lower market is too far: diff=${floor_diff:.2f}")
+                floor_over = None
+            
+            # Upper over: look for cap exactly or closest
+            cap_over = min(greater_markets,
+                         key=lambda x: abs(x.get('floor_strike', 999999) - cap))
+            cap_diff = abs(cap_over.get('floor_strike') - cap)
+            # Verify it's close enough (within 1, since it should match exactly)
+            if cap_diff > 1.0:
+                print(f"   ⚠️  Closest upper market is too far: diff=${cap_diff:.2f}")
+                cap_over = None
             
             if floor_over:
                 print(f"   ✅ Lower bound: {floor_over.get('ticker')} (Over ${floor_over.get('floor_strike'):,.2f})")
@@ -207,13 +215,76 @@ def find_over_markets(range_market, date_str):
                 print(f"   ⚠️  Could not find upper bound market for ${cap:,.2f}")
             
             return floor_over, cap_over
+        else:
+            print(f"   ❌ API Error: {resp.status_code} - {resp.text[:200]}")
     except Exception as e:
         print(f"   ❌ Error finding over markets: {e}")
+        import traceback
+        traceback.print_exc()
     
     return None, None
 
+def determine_order_type(ticker, trade_info, prev_orderbook):
+    """Determine if order was YES or NO based on price and orderbook changes
+    
+    Key insight: The last_price is the YES contract price. If a trade executed,
+    it means YES contracts were traded at that price. 
+    - If price went UP: Someone bought YES (YES buy)
+    - If price went DOWN: Someone sold YES (which is equivalent to buying NO, so NO buy)
+    - If price unchanged: Use orderbook movement to infer
+    """
+    curr_price = trade_info.get('price', 0)
+    prev_price = trade_info.get('previous_price')
+    
+    price_change = curr_price - prev_price if prev_price is not None else 0
+    
+    # Simple logic: if price went up, it's a YES buy. If down, it's a YES sell (NO buy).
+    if price_change > 0:
+        return "YES"  # YES price increased = YES buy
+    elif price_change < 0:
+        return "NO"   # YES price decreased = YES sell / NO buy
+    
+    # Price unchanged - check orderbook movement
+    if not prev_orderbook:
+        # No previous data, but last_price is always YES, so it's a YES trade
+        return "YES"
+    
+    curr_yes_bid = trade_info.get('yes_bid', 0) or 0
+    curr_yes_ask = trade_info.get('yes_ask', 100) or 100
+    curr_no_bid = trade_info.get('no_bid', 0) or 0
+    curr_no_ask = trade_info.get('no_ask', 100) or 100
+    
+    prev_yes_bid = prev_orderbook.get('yes_bid', 0) or 0
+    prev_yes_ask = prev_orderbook.get('yes_ask', 100) or 100
+    prev_no_bid = prev_orderbook.get('no_bid', 0) or 0
+    prev_no_ask = prev_orderbook.get('no_ask', 100) or 100
+    
+    # Calculate changes
+    yes_bid_change = curr_yes_bid - prev_yes_bid
+    yes_ask_change = curr_yes_ask - prev_yes_ask
+    no_bid_change = curr_no_bid - prev_no_bid
+    no_ask_change = curr_no_ask - prev_no_ask
+    
+    # If YES bid went up or YES ask went down, it's a YES buy
+    if yes_bid_change > 0 or yes_ask_change < 0:
+        return "YES"
+    # If NO bid went up or NO ask went down, it's a NO buy (YES sell)
+    elif no_bid_change > 0 or no_ask_change < 0:
+        return "NO"
+    # If YES bid went down or YES ask went up, it's a YES sell (NO buy)
+    elif yes_bid_change < 0 or yes_ask_change > 0:
+        return "NO"
+    # If NO bid went down or NO ask went up, it's a NO sell (YES buy)
+    elif no_bid_change < 0 or no_ask_change > 0:
+        return "YES"
+    else:
+        # No clear movement, but since last_price is YES, default to YES
+        return "YES"
+
 def notify_order_fulfilled(ticker, trade_info):
     """Notify when an order is fulfilled"""
+    global last_orderbook
+    
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print("\n" + "="*60)
     print(f"🔔 ORDER FULFILLED - {ticker} - {timestamp}")
@@ -223,12 +294,18 @@ def notify_order_fulfilled(ticker, trade_info):
         curr_price = trade_info.get('price', 0)
         price_dollars = trade_info.get('price_dollars', '0.0000')
         
+        # Determine order type (YES or NO)
+        prev_ob = last_orderbook.get(ticker, {})
+        order_type = determine_order_type(ticker, trade_info, prev_ob)
+        
         if prev_price is not None and prev_price != curr_price:
             price_change = curr_price - prev_price
             direction = "↑" if price_change > 0 else "↓"
+            print(f"Order Type: {order_type}")
             print(f"Price: {curr_price} cents (${price_dollars}) {direction} {abs(price_change)} cents")
             print(f"Previous: {prev_price} cents")
         else:
+            print(f"Order Type: {order_type}")
             print(f"Price: {curr_price} cents (${price_dollars})")
         
         volume = trade_info.get('volume', 0)
@@ -262,6 +339,13 @@ def check_market_trades(ticker):
                 if not hasattr(check_market_trades, '_last_vol24h'):
                     check_market_trades._last_vol24h = {}
                 check_market_trades._last_vol24h[ticker] = current_volume_24h
+                # Initialize orderbook tracking
+                last_orderbook[ticker] = {
+                    'yes_bid': market_data.get('yes_bid', 0),
+                    'yes_ask': market_data.get('yes_ask', 100),
+                    'no_bid': market_data.get('no_bid', 0),
+                    'no_ask': market_data.get('no_ask', 100)
+                }
                 print(f"📊 Initialized tracking for {ticker}: Price={current_price}, Volume={current_volume}, Vol24h={current_volume_24h}")
                 return
             
@@ -279,12 +363,20 @@ def check_market_trades(ticker):
                     "volume": current_volume,
                     "volume_24h": current_volume_24h,
                     "yes_bid": market_data.get('yes_bid', 0),
-                    "yes_ask": market_data.get('yes_ask', 0),
+                    "yes_ask": market_data.get('yes_ask', 100),
                     "no_bid": market_data.get('no_bid', 0),
-                    "no_ask": market_data.get('no_ask', 0),
+                    "no_ask": market_data.get('no_ask', 100),
                     "timestamp": datetime.now().isoformat()
                 }
                 notify_order_fulfilled(ticker, trade_info)
+                
+                # Update orderbook tracking after notification
+                last_orderbook[ticker] = {
+                    'yes_bid': market_data.get('yes_bid', 0),
+                    'yes_ask': market_data.get('yes_ask', 100),
+                    'no_bid': market_data.get('no_bid', 0),
+                    'no_ask': market_data.get('no_ask', 100)
+                }
             
             last_price[ticker] = current_price
             last_volume[ticker] = current_volume
