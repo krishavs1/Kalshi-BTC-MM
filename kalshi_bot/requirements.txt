@@ -2,4 +2,5 @@ requests
 websockets
 cryptography
 pytz
+matplotlib
 

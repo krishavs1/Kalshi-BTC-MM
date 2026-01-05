@@ -5,6 +5,12 @@ import time
 import requests
 from datetime import datetime, timezone, timedelta
 from auth import get_auth_headers
+try:
+    from profit_graph import ProfitGraph
+    GRAPH_AVAILABLE = True
+except ImportError:
+    GRAPH_AVAILABLE = False
+    print("⚠️  profit_graph.py not available - graph visualization disabled")
 
 # Configuration
 WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
@@ -225,60 +231,43 @@ def find_over_markets(range_market, date_str):
     return None, None
 
 def determine_order_type(ticker, trade_info, prev_orderbook):
-    """Determine if order was YES or NO based on price and orderbook changes
-    
-    Key insight: The last_price is the YES contract price. If a trade executed,
-    it means YES contracts were traded at that price. 
-    - If price went UP: Someone bought YES (YES buy)
-    - If price went DOWN: Someone sold YES (which is equivalent to buying NO, so NO buy)
-    - If price unchanged: Use orderbook movement to infer
-    """
+    """Determine if order was YES or NO based on which side of orderbook price is closer to"""
     curr_price = trade_info.get('price', 0)
-    prev_price = trade_info.get('previous_price')
-    
-    price_change = curr_price - prev_price if prev_price is not None else 0
-    
-    # Simple logic: if price went up, it's a YES buy. If down, it's a YES sell (NO buy).
-    if price_change > 0:
-        return "YES"  # YES price increased = YES buy
-    elif price_change < 0:
-        return "NO"   # YES price decreased = YES sell / NO buy
-    
-    # Price unchanged - check orderbook movement
-    if not prev_orderbook:
-        # No previous data, but last_price is always YES, so it's a YES trade
-        return "YES"
     
     curr_yes_bid = trade_info.get('yes_bid', 0) or 0
     curr_yes_ask = trade_info.get('yes_ask', 100) or 100
     curr_no_bid = trade_info.get('no_bid', 0) or 0
     curr_no_ask = trade_info.get('no_ask', 100) or 100
     
-    prev_yes_bid = prev_orderbook.get('yes_bid', 0) or 0
-    prev_yes_ask = prev_orderbook.get('yes_ask', 100) or 100
-    prev_no_bid = prev_orderbook.get('no_bid', 0) or 0
-    prev_no_ask = prev_orderbook.get('no_ask', 100) or 100
-    
-    # Calculate changes
-    yes_bid_change = curr_yes_bid - prev_yes_bid
-    yes_ask_change = curr_yes_ask - prev_yes_ask
-    no_bid_change = curr_no_bid - prev_no_bid
-    no_ask_change = curr_no_ask - prev_no_ask
-    
-    # If YES bid went up or YES ask went down, it's a YES buy
-    if yes_bid_change > 0 or yes_ask_change < 0:
-        return "YES"
-    # If NO bid went up or NO ask went down, it's a NO buy (YES sell)
-    elif no_bid_change > 0 or no_ask_change < 0:
-        return "NO"
-    # If YES bid went down or YES ask went up, it's a YES sell (NO buy)
-    elif yes_bid_change < 0 or yes_ask_change > 0:
-        return "NO"
-    # If NO bid went down or NO ask went up, it's a NO sell (YES buy)
-    elif no_bid_change < 0 or no_ask_change > 0:
-        return "YES"
+    # Calculate minimum distance to YES side (use closest of bid or ask)
+    if curr_yes_bid > 0 and curr_yes_ask < 100:
+        dist_to_yes = min(abs(curr_price - curr_yes_bid), abs(curr_price - curr_yes_ask))
+    elif curr_yes_bid > 0:
+        dist_to_yes = abs(curr_price - curr_yes_bid)
+    elif curr_yes_ask < 100:
+        dist_to_yes = abs(curr_price - curr_yes_ask)
     else:
-        # No clear movement, but since last_price is YES, default to YES
+        dist_to_yes = float('inf')
+    
+    # Calculate minimum distance to NO side (convert NO prices to YES terms: 100 - NO_price)
+    if curr_no_bid > 0 and curr_no_ask < 100:
+        no_bid_yes_terms = 100 - curr_no_bid
+        no_ask_yes_terms = 100 - curr_no_ask
+        dist_to_no = min(abs(curr_price - no_bid_yes_terms), abs(curr_price - no_ask_yes_terms))
+    elif curr_no_bid > 0:
+        dist_to_no = abs(curr_price - (100 - curr_no_bid))
+    elif curr_no_ask < 100:
+        dist_to_no = abs(curr_price - (100 - curr_no_ask))
+    else:
+        dist_to_no = float('inf')
+    
+    # Whichever side is closer, that's the order type
+    if dist_to_yes < dist_to_no:
+        return "YES"
+    elif dist_to_no < dist_to_yes:
+        return "NO"
+    else:
+        # Equal distance (shouldn't happen often), default to YES
         return "YES"
 
 def notify_order_fulfilled(ticker, trade_info):
@@ -316,6 +305,26 @@ def notify_order_fulfilled(ticker, trade_info):
         print(f"  YES Bid: {trade_info.get('yes_bid', 0)} | YES Ask: {trade_info.get('yes_ask', 0)}")
         print(f"  NO Bid: {trade_info.get('no_bid', 0)} | NO Ask: {trade_info.get('no_ask', 0)}")
     print("="*60 + "\n")
+
+def get_market_orderbook(ticker):
+    """Get current bid/ask for a market"""
+    try:
+        url = f"{REST_URL_BASE}/{ticker}"
+        headers = get_auth_headers('GET', f'/trade-api/v2/markets/{ticker}')
+        resp = requests.get(url, headers=headers, timeout=5)
+        
+        if resp.status_code == 200:
+            market_data = resp.json().get('market', {})
+            return {
+                'yes_bid': market_data.get('yes_bid', 0) or 0,
+                'yes_ask': market_data.get('yes_ask', 100) or 100,
+                'no_bid': market_data.get('no_bid', 0) or 0,
+                'no_ask': market_data.get('no_ask', 100) or 100,
+                'last_price': market_data.get('last_price', 0)
+            }
+    except:
+        pass
+    return None
 
 def check_market_trades(ticker):
     """Check for trades on a specific market"""
@@ -385,18 +394,63 @@ def check_market_trades(ticker):
     except Exception as e:
         pass  # Silently handle errors
 
-async def monitor_markets(tickers):
+def calculate_profits(range_ob, lower_leg_ob, higher_leg_ob):
+    """Calculate 4 potential profit values"""
+    if not (range_ob and lower_leg_ob and higher_leg_ob):
+        return None
+    
+    # Extract values
+    range_yes_bid = range_ob['yes_bid']
+    range_yes_ask = range_ob['yes_ask']
+    range_no_bid = range_ob['no_bid']
+    range_no_ask = range_ob['no_ask']
+    
+    lower_yes_bid = lower_leg_ob['yes_bid']
+    lower_yes_ask = lower_leg_ob['yes_ask']
+    lower_no_bid = lower_leg_ob['no_bid']
+    lower_no_ask = lower_leg_ob['no_ask']
+    
+    higher_yes_bid = higher_leg_ob['yes_bid']
+    higher_yes_ask = higher_leg_ob['yes_ask']
+    higher_no_bid = higher_leg_ob['no_bid']
+    higher_no_ask = higher_leg_ob['no_ask']
+    
+    # Profit 1: Range YES overpriced
+    # Range YES Bid − (Lower leg YES Ask + Higher leg NO Ask − 100)
+    profit1 = range_yes_bid - (lower_yes_ask + higher_no_ask - 100)
+    
+    # Profit 2: Range YES underpriced
+    # (Lower leg YES Bid + Higher leg NO Bid − 100) − Range YES Ask
+    profit2 = (lower_yes_bid + higher_no_bid - 100) - range_yes_ask
+    
+    # Profit 3: Range NO overpriced
+    # Range NO Bid − (Lower leg NO Ask + Higher leg YES Ask)
+    profit3 = range_no_bid - (lower_no_ask + higher_yes_ask)
+    
+    # Profit 4: Range NO underpriced
+    # (Lower leg NO Bid + Higher leg YES Bid) − Range NO Ask
+    profit4 = (lower_no_bid + higher_yes_bid) - range_no_ask
+    
+    return {
+        'profit1': profit1,
+        'profit2': profit2,
+        'profit3': profit3,
+        'profit4': profit4
+    }
+
+async def monitor_markets(tickers, range_ticker, lower_leg_ticker, higher_leg_ticker, profit_graph=None):
     """Monitor multiple markets for order fulfillments"""
     print(f"\n🎯 Monitoring {len(tickers)} markets:")
-    for ticker in tickers:
-        print(f"   - {ticker}")
+    print(f"   Range: {range_ticker}")
+    print(f"   Lower leg: {lower_leg_ticker}")
+    print(f"   Higher leg: {higher_leg_ticker}")
     print("-" * 60)
     
     # Generate auth headers for WebSocket
     headers = get_auth_headers(method="GET", path="/trade-api/ws/v2")
     
     last_rest_poll = time.time()
-    REST_POLL_INTERVAL = 2  # Poll every 2 seconds
+    REST_POLL_INTERVAL = 1  # Poll every 1 second
     
     try:
         async with websockets.connect(WS_URL, extra_headers=headers) as websocket:
@@ -422,9 +476,46 @@ async def monitor_markets(tickers):
             await asyncio.sleep(1.0)
             
             while True:
-                # Poll REST API periodically for trades
+                # Poll REST API periodically for trades and orderbook
                 current_time = time.time()
                 if current_time - last_rest_poll >= REST_POLL_INTERVAL:
+                    # Get orderbooks for all markets
+                    orderbooks = {}
+                    for ticker in tickers:
+                        orderbooks[ticker] = get_market_orderbook(ticker)
+                    
+                    # Print orderbook every second
+                    print(f"\n📊 Orderbook Update - {datetime.now().strftime('%H:%M:%S')}")
+                    for ticker in tickers:
+                        ob = orderbooks.get(ticker)
+                        if ob:
+                            print(f"  {ticker}:")
+                            print(f"    YES Bid: {ob['yes_bid']} | YES Ask: {ob['yes_ask']} | Last: {ob['last_price']}")
+                            print(f"    NO Bid: {ob['no_bid']} | NO Ask: {ob['no_ask']}")
+                    
+                    # Calculate and display profits
+                    range_ob = orderbooks.get(range_ticker)
+                    lower_ob = orderbooks.get(lower_leg_ticker)
+                    higher_ob = orderbooks.get(higher_leg_ticker)
+                    
+                    profits = calculate_profits(range_ob, lower_ob, higher_ob)
+                    if profits:
+                        print(f"\n💰 Profit Opportunities:")
+                        print(f"  Profit 1 (Range YES overpriced): {profits['profit1']:.2f}")
+                        print(f"  Profit 2 (Range YES underpriced): {profits['profit2']:.2f}")
+                        print(f"  Profit 3 (Range NO overpriced): {profits['profit3']:.2f}")
+                        print(f"  Profit 4 (Range NO underpriced): {profits['profit4']:.2f}")
+                        
+                        # Update graph if available
+                        if profit_graph:
+                            profit_graph.add_data_point(
+                                profits['profit1'],
+                                profits['profit2'],
+                                profits['profit3'],
+                                profits['profit4']
+                            )
+                    
+                    # Check for trades
                     for ticker in tickers:
                         check_market_trades(ticker)
                     last_rest_poll = current_time
@@ -499,15 +590,39 @@ async def main():
     
     # 5. Build list of markets to monitor
     tickers_to_monitor = [range_ticker]
+    lower_leg_ticker = None
+    higher_leg_ticker = None
+    
     if floor_over:
-        tickers_to_monitor.append(floor_over.get('ticker'))
+        lower_leg_ticker = floor_over.get('ticker')
+        tickers_to_monitor.append(lower_leg_ticker)
     if cap_over:
-        tickers_to_monitor.append(cap_over.get('ticker'))
+        higher_leg_ticker = cap_over.get('ticker')
+        tickers_to_monitor.append(higher_leg_ticker)
     
     print(f"\n📊 Markets to monitor: {len(tickers_to_monitor)}")
     
-    # 6. Start monitoring
-    await monitor_markets(tickers_to_monitor)
+    if not lower_leg_ticker or not higher_leg_ticker:
+        print("❌ Missing leg markets - cannot calculate profits")
+        return
+    
+    # 6. Initialize profit graph if available
+    profit_graph = None
+    if GRAPH_AVAILABLE:
+        try:
+            profit_graph = ProfitGraph(window_seconds=300, update_interval=1000)  # 5 min window, 1 sec updates
+            profit_graph.start()
+            print("📊 Profit graph started")
+        except Exception as e:
+            print(f"⚠️  Could not start profit graph: {e}")
+            profit_graph = None
+    
+    # 7. Start monitoring
+    try:
+        await monitor_markets(tickers_to_monitor, range_ticker, lower_leg_ticker, higher_leg_ticker, profit_graph)
+    finally:
+        if profit_graph:
+            profit_graph.close()
 
 if __name__ == "__main__":
     try:
