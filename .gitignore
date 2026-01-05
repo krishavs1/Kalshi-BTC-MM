@@ -25,3 +25,5 @@ kalshi-public.pem
 .DS_Store
 Thumbs.db
 
+# CSV data files
+*.csv
