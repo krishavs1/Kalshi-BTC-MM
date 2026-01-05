@@ -1,3 +1,13 @@
+import matplotlib
+# Try to use a GUI backend, fall back to default if not available
+try:
+    matplotlib.use('TkAgg')
+except:
+    try:
+        matplotlib.use('Qt5Agg')
+    except:
+        pass  # Use default backend
+
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from collections import deque
@@ -30,7 +40,9 @@ class ProfitGraph:
         self.lock = threading.Lock()
         
         # Setup the plot
+        plt.ion()  # Turn on interactive mode
         self.fig, self.ax = plt.subplots(figsize=(12, 6))
+        self.fig.canvas.manager.set_window_title('Profit Opportunities Graph')
         self.lines = {}
         
         # Initialize lines
@@ -102,22 +114,34 @@ class ProfitGraph:
             if all_profits:
                 y_min = min(all_profits) - 5
                 y_max = max(all_profits) + 5
+                # Ensure reasonable y-axis range
+                if y_max - y_min < 10:
+                    center = (y_min + y_max) / 2
+                    y_min = center - 10
+                    y_max = center + 10
                 self.ax.set_ylim(y_min, y_max)
+        else:
+            # Initial empty state
+            self.ax.set_xlim(0, self.window_seconds)
+            self.ax.set_ylim(-20, 20)
         
+        self.fig.canvas.draw_idle()
         return list(self.lines.values())
     
     def start(self):
         """Start the live graph animation"""
         if not self.running:
             self.running = True
+            self.fig.show()
             self.ani = animation.FuncAnimation(
                 self.fig, 
                 self._update_graph, 
                 interval=self.update_interval,
-                blit=True,
+                blit=False,  # Changed to False for better compatibility
                 cache_frame_data=False
             )
-            plt.show(block=False)
+            plt.draw()
+            plt.pause(0.001)  # Small pause to allow window to appear
     
     def stop(self):
         """Stop the animation"""
@@ -134,6 +158,7 @@ class ProfitGraph:
 def main():
     """Example usage"""
     import random
+    
     
     graph = ProfitGraph(window_seconds=60, update_interval=1000)
     graph.start()

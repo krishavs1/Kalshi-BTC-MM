@@ -3,14 +3,10 @@ import websockets
 import json
 import time
 import requests
+import csv
+import os
 from datetime import datetime, timezone, timedelta
 from auth import get_auth_headers
-try:
-    from profit_graph import ProfitGraph
-    GRAPH_AVAILABLE = True
-except ImportError:
-    GRAPH_AVAILABLE = False
-    print("⚠️  profit_graph.py not available - graph visualization disabled")
 
 # Configuration
 WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
@@ -438,7 +434,27 @@ def calculate_profits(range_ob, lower_leg_ob, higher_leg_ob):
         'profit4': profit4
     }
 
-async def monitor_markets(tickers, range_ticker, lower_leg_ticker, higher_leg_ticker, profit_graph=None):
+def init_profit_csv(csv_filename):
+    """Initialize CSV file with headers"""
+    file_exists = os.path.exists(csv_filename)
+    with open(csv_filename, 'a', newline='') as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(['Time', 'Profit 1 (Range YES overpriced)', 'Profit 2 (Range YES underpriced)', 
+                           'Profit 3 (Range NO overpriced)', 'Profit 4 (Range NO underpriced)'])
+    print(f"📝 Profit data will be logged to: {csv_filename}")
+
+def log_profits_to_csv(csv_filename, profit1, profit2, profit3, profit4):
+    """Append profit values to CSV file"""
+    try:
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        with open(csv_filename, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([current_time, f"{profit1:.2f}", f"{profit2:.2f}", f"{profit3:.2f}", f"{profit4:.2f}"])
+    except Exception as e:
+        print(f"⚠️  Error writing to CSV: {e}")
+
+async def monitor_markets(tickers, range_ticker, lower_leg_ticker, higher_leg_ticker, csv_filename=None):
     """Monitor multiple markets for order fulfillments"""
     print(f"\n🎯 Monitoring {len(tickers)} markets:")
     print(f"   Range: {range_ticker}")
@@ -478,7 +494,12 @@ async def monitor_markets(tickers, range_ticker, lower_leg_ticker, higher_leg_ti
             while True:
                 # Poll REST API periodically for trades and orderbook
                 current_time = time.time()
-                if current_time - last_rest_poll >= REST_POLL_INTERVAL:
+                elapsed = current_time - last_rest_poll
+                if elapsed >= REST_POLL_INTERVAL:
+                    # Update poll time based on intended interval to prevent drift
+                    # If we're late, advance by the interval, not by actual elapsed time
+                    last_rest_poll = last_rest_poll + REST_POLL_INTERVAL
+                    
                     # Get orderbooks for all markets
                     orderbooks = {}
                     for ticker in tickers:
@@ -506,19 +527,17 @@ async def monitor_markets(tickers, range_ticker, lower_leg_ticker, higher_leg_ti
                         print(f"  Profit 3 (Range NO overpriced): {profits['profit3']:.2f}")
                         print(f"  Profit 4 (Range NO underpriced): {profits['profit4']:.2f}")
                         
-                        # Update graph if available
-                        if profit_graph:
-                            profit_graph.add_data_point(
-                                profits['profit1'],
-                                profits['profit2'],
-                                profits['profit3'],
-                                profits['profit4']
-                            )
+                        # Log to CSV
+                        if csv_filename:
+                            log_profits_to_csv(csv_filename, 
+                                             profits['profit1'], 
+                                             profits['profit2'], 
+                                             profits['profit3'], 
+                                             profits['profit4'])
                     
                     # Check for trades
                     for ticker in tickers:
                         check_market_trades(ticker)
-                    last_rest_poll = current_time
                 
                 # Check for WebSocket messages with timeout
                 try:
@@ -606,23 +625,12 @@ async def main():
         print("❌ Missing leg markets - cannot calculate profits")
         return
     
-    # 6. Initialize profit graph if available
-    profit_graph = None
-    if GRAPH_AVAILABLE:
-        try:
-            profit_graph = ProfitGraph(window_seconds=300, update_interval=1000)  # 5 min window, 1 sec updates
-            profit_graph.start()
-            print("📊 Profit graph started")
-        except Exception as e:
-            print(f"⚠️  Could not start profit graph: {e}")
-            profit_graph = None
+    # 6. Initialize CSV logging
+    csv_filename = f"profits_{date_str}.csv"
+    init_profit_csv(csv_filename)
     
     # 7. Start monitoring
-    try:
-        await monitor_markets(tickers_to_monitor, range_ticker, lower_leg_ticker, higher_leg_ticker, profit_graph)
-    finally:
-        if profit_graph:
-            profit_graph.close()
+    await monitor_markets(tickers_to_monitor, range_ticker, lower_leg_ticker, higher_leg_ticker, csv_filename)
 
 if __name__ == "__main__":
     try:
