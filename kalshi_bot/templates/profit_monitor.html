@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kalshi Profit Monitor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1e1e1e 0%, #2d2d2d 100%);
+            color: #ffffff;
+            padding: 20px;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        h1 {
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+            background: linear-gradient(90deg, #4A90E2, #50C878);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .subtitle {
+            text-align: center;
+            color: #888888;
+            margin-bottom: 30px;
+            font-size: 0.9em;
+        }
+        
+        .section {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .section-title {
+            font-size: 1.3em;
+            margin-bottom: 15px;
+            color: #4A90E2;
+            font-weight: bold;
+        }
+        
+        .market-card {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-left: 4px solid #4A90E2;
+        }
+        
+        .market-name {
+            font-weight: bold;
+            font-size: 1.1em;
+            margin-bottom: 5px;
+            color: #ffffff;
+        }
+        
+        .ticker {
+            color: #888888;
+            font-size: 0.85em;
+            margin-bottom: 10px;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .orderbook-data {
+            font-family: 'Courier New', monospace;
+            font-size: 0.95em;
+            line-height: 1.6;
+            color: #00ff00;
+        }
+        
+        .profit-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+        }
+        
+        .profit-card {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            padding: 15px;
+            border-left: 4px solid;
+        }
+        
+        .profit-card.positive {
+            border-left-color: #50C878;
+        }
+        
+        .profit-card.negative {
+            border-left-color: #FF6B6B;
+        }
+        
+        .profit-card.neutral {
+            border-left-color: #888888;
+        }
+        
+        .profit-label {
+            font-size: 0.9em;
+            color: #888888;
+            margin-bottom: 5px;
+        }
+        
+        .profit-value {
+            font-size: 1.8em;
+            font-weight: bold;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .profit-card.positive .profit-value {
+            color: #50C878;
+        }
+        
+        .profit-card.negative .profit-value {
+            color: #FF6B6B;
+        }
+        
+        .profit-card.neutral .profit-value {
+            color: #888888;
+        }
+        
+        .status {
+            text-align: center;
+            color: #888888;
+            font-size: 0.85em;
+            margin-top: 20px;
+        }
+        
+        .status.active {
+            color: #50C878;
+        }
+        
+        .status.inactive {
+            color: #FF6B6B;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .loading {
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📊 Kalshi Profit Monitor</h1>
+        <div class="subtitle" id="lastUpdate">Waiting for data...</div>
+        
+        <div class="section">
+            <div class="section-title">Orderbook</div>
+            <div id="orderbooks">
+                <div class="market-card">
+                    <div class="market-name">Range</div>
+                    <div class="ticker" id="ticker-range">-</div>
+                    <div class="orderbook-data" id="data-range">Loading...</div>
+                </div>
+                <div class="market-card">
+                    <div class="market-name">Lower Leg</div>
+                    <div class="ticker" id="ticker-lower">-</div>
+                    <div class="orderbook-data" id="data-lower">Loading...</div>
+                </div>
+                <div class="market-card">
+                    <div class="market-name">Higher Leg</div>
+                    <div class="ticker" id="ticker-higher">-</div>
+                    <div class="orderbook-data" id="data-higher">Loading...</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="section">
+            <div class="section-title">💰 Profit Opportunities</div>
+            <div class="profit-grid">
+                <div class="profit-card neutral" id="profit1-card">
+                    <div class="profit-label">Profit 1 (Range YES overpriced)</div>
+                    <div class="profit-value" id="profit1-value">0.00</div>
+                </div>
+                <div class="profit-card neutral" id="profit2-card">
+                    <div class="profit-label">Profit 2 (Range YES underpriced)</div>
+                    <div class="profit-value" id="profit2-value">0.00</div>
+                </div>
+                <div class="profit-card neutral" id="profit3-card">
+                    <div class="profit-label">Profit 3 (Range NO overpriced)</div>
+                    <div class="profit-value" id="profit3-value">0.00</div>
+                </div>
+                <div class="profit-card neutral" id="profit4-card">
+                    <div class="profit-label">Profit 4 (Range NO underpriced)</div>
+                    <div class="profit-value" id="profit4-value">0.00</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="status active" id="status">🟢 Connected</div>
+    </div>
+    
+    <script>
+        function updateDisplay(data) {
+            // Update last update time
+            document.getElementById('lastUpdate').textContent = 
+                `Last Update: ${data.last_update || 'Never'}`;
+            
+            // Update orderbooks
+            const markets = [
+                {key: 'range', name: 'Range'},
+                {key: 'lower', name: 'Lower Leg'},
+                {key: 'higher', name: 'Higher Leg'}
+            ];
+            
+            markets.forEach(market => {
+                const ob = data.orderbooks[market.key];
+                const ticker = data.tickers[market.key] || '-';
+                
+                document.getElementById(`ticker-${market.key}`).textContent = ticker;
+                
+                if (ob) {
+                    const html = `
+                        YES Bid: ${String(ob.yes_bid).padStart(3)} | YES Ask: ${String(ob.yes_ask).padStart(3)} | Last: ${String(ob.last_price).padStart(3)}<br>
+                        NO Bid:  ${String(ob.no_bid).padStart(3)} | NO Ask:  ${String(ob.no_ask).padStart(3)}
+                    `;
+                    document.getElementById(`data-${market.key}`).innerHTML = html;
+                } else {
+                    document.getElementById(`data-${market.key}`).textContent = 'No data';
+                }
+            });
+            
+            // Update profits
+            const profits = data.profits || {};
+            const profitKeys = ['profit1', 'profit2', 'profit3', 'profit4'];
+            
+            profitKeys.forEach((key, index) => {
+                const value = profits[key] || 0;
+                const valueElement = document.getElementById(`${key}-value`);
+                const cardElement = document.getElementById(`${key}-card`);
+                
+                valueElement.textContent = value.toFixed(2);
+                
+                // Update card style
+                cardElement.classList.remove('positive', 'negative', 'neutral');
+                if (value > 0) {
+                    cardElement.classList.add('positive');
+                } else if (value < 0) {
+                    cardElement.classList.add('negative');
+                } else {
+                    cardElement.classList.add('neutral');
+                }
+            });
+            
+            // Update status
+            const statusElement = document.getElementById('status');
+            if (data.last_update) {
+                statusElement.textContent = '🟢 Connected';
+                statusElement.classList.remove('inactive');
+                statusElement.classList.add('active');
+            } else {
+                statusElement.textContent = '🔴 Disconnected';
+                statusElement.classList.remove('active');
+                statusElement.classList.add('inactive');
+            }
+        }
+        
+        function fetchData() {
+            fetch('/api/data')
+                .then(response => response.json())
+                .then(data => {
+                    updateDisplay(data);
+                })
+                .catch(error => {
+                    console.error('Error fetching data:', error);
+                    document.getElementById('status').textContent = '🔴 Error';
+                    document.getElementById('status').classList.remove('active');
+                    document.getElementById('status').classList.add('inactive');
+                });
+        }
+        
+        // Fetch data every second
+        setInterval(fetchData, 1000);
+        
+        // Initial fetch
+        fetchData();
+    </script>
+</body>
+</html>
+

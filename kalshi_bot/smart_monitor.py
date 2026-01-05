@@ -5,8 +5,15 @@ import time
 import requests
 import csv
 import os
+import threading
 from datetime import datetime, timezone, timedelta
 from auth import get_auth_headers
+try:
+    from web_ui import update_data, run_server
+    WEB_UI_AVAILABLE = True
+except ImportError:
+    WEB_UI_AVAILABLE = False
+    print("⚠️  web_ui.py not available - web UI disabled")
 
 # Configuration
 WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
@@ -527,6 +534,23 @@ async def monitor_markets(tickers, range_ticker, lower_leg_ticker, higher_leg_ti
                         print(f"  Profit 3 (Range NO overpriced): {profits['profit3']:.2f}")
                         print(f"  Profit 4 (Range NO underpriced): {profits['profit4']:.2f}")
                         
+                        # Update web UI if available
+                        if WEB_UI_AVAILABLE:
+                            try:
+                                ui_orderbooks = {
+                                    'range': range_ob,
+                                    'lower': lower_ob,
+                                    'higher': higher_ob
+                                }
+                                ui_tickers = {
+                                    'range': range_ticker,
+                                    'lower': lower_leg_ticker,
+                                    'higher': higher_leg_ticker
+                                }
+                                update_data(ui_orderbooks, profits, ui_tickers)
+                            except:
+                                pass  # Silently fail if UI not ready
+                        
                         # Log to CSV
                         if csv_filename:
                             log_profits_to_csv(csv_filename, 
@@ -629,7 +653,18 @@ async def main():
     csv_filename = f"profits_{date_str}.csv"
     init_profit_csv(csv_filename)
     
-    # 7. Start monitoring
+    # 7. Initialize web UI if available
+    if WEB_UI_AVAILABLE:
+        try:
+            # Start web server in background thread
+            ui_thread = threading.Thread(target=run_server, daemon=True, args=('127.0.0.1', 5000, False))
+            ui_thread.start()
+            print("🌐 Web UI started at http://127.0.0.1:5000")
+            time.sleep(1)  # Give server a moment to start
+        except Exception as e:
+            print(f"⚠️  Could not start web UI: {e}")
+    
+    # 8. Start monitoring
     await monitor_markets(tickers_to_monitor, range_ticker, lower_leg_ticker, higher_leg_ticker, csv_filename)
 
 if __name__ == "__main__":
