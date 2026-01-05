@@ -10,20 +10,20 @@ app.config['TEMPLATES_AUTO_RELOAD'] = True
 # Shared data structure (thread-safe with locks)
 data_lock = threading.Lock()
 latest_data = {
-    'orderbooks': {},
-    'profits': {},
-    'tickers': {},
+    'sets': [],  # List of dicts, each with 'orderbooks', 'profits', 'tickers'
     'last_update': None
 }
 
-def update_data(orderbooks, profits, tickers):
-    """Update the shared data structure"""
+def update_data(all_sets_data):
+    """Update the shared data structure
+    
+    Args:
+        all_sets_data: List of dicts, each with 'orderbooks', 'profits', 'tickers' for one set
+    """
     global latest_data
     with data_lock:
         latest_data = {
-            'orderbooks': orderbooks,
-            'profits': profits,
-            'tickers': tickers,
+            'sets': all_sets_data,
             'last_update': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
 

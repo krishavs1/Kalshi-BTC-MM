@@ -6,6 +6,8 @@ import requests
 import csv
 import os
 import threading
+import aiohttp
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from auth import get_auth_headers
 try:
@@ -139,23 +141,24 @@ def calculate_volatility_score(market):
         'cap': cap
     }
 
-def find_best_range_market(range_markets):
-    """Select the range market with highest volume/volatility"""
+def find_top_range_markets(range_markets, top_n=5):
+    """Select the top N range markets with highest volume/volatility"""
     if not range_markets:
-        return None
+        return []
     
     scored = [calculate_volatility_score(m) for m in range_markets]
     scored.sort(key=lambda x: x['score'], reverse=True)
     
-    best = scored[0]
-    market = best['market']
+    top_markets = []
+    for i, best in enumerate(scored[:top_n]):
+        market = best['market']
+        top_markets.append(market)
+        print(f"\n✅ Top {i+1} range market:")
+        print(f"   Ticker: {market.get('ticker')}")
+        print(f"   Range: ${best['floor']:,.2f} - ${best['cap']:,.2f}")
+        print(f"   Volume 24h: {best['volume_24h']}, Score: {best['score']:.2f}")
     
-    print(f"\n✅ Selected best range market:")
-    print(f"   Ticker: {market.get('ticker')}")
-    print(f"   Range: ${best['floor']:,.2f} - ${best['cap']:,.2f}")
-    print(f"   Volume 24h: {best['volume_24h']}, Score: {best['score']:.2f}")
-    
-    return market
+    return top_markets
 
 def find_over_markets(range_market, date_str):
     """Find the corresponding 'over X' markets for the range bounds"""
@@ -309,12 +312,31 @@ def notify_order_fulfilled(ticker, trade_info):
         print(f"  NO Bid: {trade_info.get('no_bid', 0)} | NO Ask: {trade_info.get('no_ask', 0)}")
     print("="*60 + "\n")
 
-def get_market_orderbook(ticker):
-    """Get current bid/ask for a market"""
+async def get_market_orderbook_async(session, ticker):
+    """Get current bid/ask for a market (async version)"""
     try:
         url = f"{REST_URL_BASE}/{ticker}"
         headers = get_auth_headers('GET', f'/trade-api/v2/markets/{ticker}')
-        resp = requests.get(url, headers=headers, timeout=5)
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=1.5)) as resp:
+            if resp.status == 200:
+                market_data = (await resp.json()).get('market', {})
+                return {
+                    'yes_bid': market_data.get('yes_bid', 0) or 0,
+                    'yes_ask': market_data.get('yes_ask', 100) or 100,
+                    'no_bid': market_data.get('no_bid', 0) or 0,
+                    'no_ask': market_data.get('no_ask', 100) or 100,
+                    'last_price': market_data.get('last_price', 0)
+                }
+    except:
+        pass
+    return None
+
+def get_market_orderbook(ticker):
+    """Get current bid/ask for a market (sync version for trade checking)"""
+    try:
+        url = f"{REST_URL_BASE}/{ticker}"
+        headers = get_auth_headers('GET', f'/trade-api/v2/markets/{ticker}')
+        resp = requests.get(url, headers=headers, timeout=1.5)
         
         if resp.status_code == 200:
             market_data = resp.json().get('market', {})
@@ -441,55 +463,92 @@ def calculate_profits(range_ob, lower_leg_ob, higher_leg_ob):
         'profit4': profit4
     }
 
-def init_profit_csv(csv_filename):
-    """Initialize CSV file with headers"""
+def init_profit_csv(csv_filename, num_ranges=5):
+    """Initialize CSV file with headers for multiple ranges"""
     file_exists = os.path.exists(csv_filename)
     with open(csv_filename, 'a', newline='') as f:
         writer = csv.writer(f)
         if not file_exists:
-            writer.writerow(['Time', 'Profit 1 (Range YES overpriced)', 'Profit 2 (Range YES underpriced)', 
-                           'Profit 3 (Range NO overpriced)', 'Profit 4 (Range NO underpriced)'])
+            headers = ['Time']
+            for i in range(1, num_ranges + 1):
+                headers.extend([
+                    f'Range{i} Profit 1 (YES overpriced)',
+                    f'Range{i} Profit 2 (YES underpriced)',
+                    f'Range{i} Profit 3 (NO overpriced)',
+                    f'Range{i} Profit 4 (NO underpriced)'
+                ])
+            writer.writerow(headers)
     print(f"📝 Profit data will be logged to: {csv_filename}")
 
-def log_profits_to_csv(csv_filename, profit1, profit2, profit3, profit4):
-    """Append profit values to CSV file"""
+def log_profits_to_csv(csv_filename, all_profits):
+    """Append profit values for all ranges to CSV file
+    
+    Args:
+        csv_filename: Path to CSV file
+        all_profits: List of dicts, each containing profit1, profit2, profit3, profit4
+    """
     try:
         current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        row = [current_time]
+        for profits in all_profits:
+            if profits:
+                row.extend([
+                    f"{profits.get('profit1', 0):.2f}",
+                    f"{profits.get('profit2', 0):.2f}",
+                    f"{profits.get('profit3', 0):.2f}",
+                    f"{profits.get('profit4', 0):.2f}"
+                ])
+            else:
+                row.extend(['0.00', '0.00', '0.00', '0.00'])
+        
         with open(csv_filename, 'a', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow([current_time, f"{profit1:.2f}", f"{profit2:.2f}", f"{profit3:.2f}", f"{profit4:.2f}"])
+            writer.writerow(row)
     except Exception as e:
         print(f"⚠️  Error writing to CSV: {e}")
 
-async def monitor_markets(tickers, range_ticker, lower_leg_ticker, higher_leg_ticker, csv_filename=None):
-    """Monitor multiple markets for order fulfillments"""
-    print(f"\n🎯 Monitoring {len(tickers)} markets:")
-    print(f"   Range: {range_ticker}")
-    print(f"   Lower leg: {lower_leg_ticker}")
-    print(f"   Higher leg: {higher_leg_ticker}")
+async def monitor_markets(market_sets, csv_filename=None):
+    """Monitor multiple market sets for order fulfillments
+    
+    Args:
+        market_sets: List of dicts, each with 'range_ticker', 'lower_leg_ticker', 'higher_leg_ticker'
+        csv_filename: Optional CSV file to log profits
+    """
+    print(f"\n🎯 Monitoring {len(market_sets)} range sets ({len(market_sets) * 3} total markets):")
+    for i, market_set in enumerate(market_sets, 1):
+        print(f"   Set {i}: Range={market_set['range_ticker']}, Lower={market_set['lower_leg_ticker']}, Higher={market_set['higher_leg_ticker']}")
     print("-" * 60)
     
     # Generate auth headers for WebSocket
     headers = get_auth_headers(method="GET", path="/trade-api/ws/v2")
     
     last_rest_poll = time.time()
-    REST_POLL_INTERVAL = 1  # Poll every 1 second
+    REST_POLL_INTERVAL = 0.5  # Poll every 0.5 seconds for faster updates
     
     try:
-        async with websockets.connect(WS_URL, extra_headers=headers) as websocket:
+        async with websockets.connect(WS_URL, additional_headers=headers) as websocket:
             print("✅ Connected to WebSocket!")
             
             # Subscribe to orderbook_delta for all tickers
+            all_tickers_list = []
+            for market_set in market_sets:
+                all_tickers_list.extend([
+                    market_set['range_ticker'],
+                    market_set['lower_leg_ticker'],
+                    market_set['higher_leg_ticker']
+                ])
+            all_tickers_list = list(set(all_tickers_list))  # Remove duplicates
+            
             sub_msg = {
                 "id": 1,
                 "cmd": "subscribe",
                 "params": {
                     "channels": ["orderbook_delta"],
-                    "market_tickers": tickers
+                    "market_tickers": all_tickers_list
                 }
             }
             await websocket.send(json.dumps(sub_msg))
-            print(f"📤 Subscribed to orderbook_delta channel for {len(tickers)} markets")
+            print(f"📤 Subscribed to orderbook_delta channel for {len(all_tickers_list)} markets")
             await asyncio.sleep(0.5)
             
             print("📡 Listening for order fulfillments...")
@@ -504,63 +563,73 @@ async def monitor_markets(tickers, range_ticker, lower_leg_ticker, higher_leg_ti
                 elapsed = current_time - last_rest_poll
                 if elapsed >= REST_POLL_INTERVAL:
                     # Update poll time based on intended interval to prevent drift
-                    # If we're late, advance by the interval, not by actual elapsed time
                     last_rest_poll = last_rest_poll + REST_POLL_INTERVAL
                     
-                    # Get orderbooks for all markets
+                    # Collect all unique tickers
+                    all_tickers = []
+                    for market_set in market_sets:
+                        all_tickers.extend([
+                            market_set['range_ticker'],
+                            market_set['lower_leg_ticker'],
+                            market_set['higher_leg_ticker']
+                        ])
+                    all_tickers = list(set(all_tickers))  # Remove duplicates
+                    
+                    # Get orderbooks for all markets concurrently using async
                     orderbooks = {}
-                    for ticker in tickers:
-                        orderbooks[ticker] = get_market_orderbook(ticker)
+                    async with aiohttp.ClientSession() as session:
+                        tasks = [get_market_orderbook_async(session, ticker) for ticker in all_tickers]
+                        results = await asyncio.gather(*tasks, return_exceptions=True)
+                        for ticker, result in zip(all_tickers, results):
+                            if isinstance(result, Exception) or result is None:
+                                orderbooks[ticker] = None
+                            else:
+                                orderbooks[ticker] = result
                     
-                    # Print orderbook every second
-                    print(f"\n📊 Orderbook Update - {datetime.now().strftime('%H:%M:%S')}")
-                    for ticker in tickers:
-                        ob = orderbooks.get(ticker)
-                        if ob:
-                            print(f"  {ticker}:")
-                            print(f"    YES Bid: {ob['yes_bid']} | YES Ask: {ob['yes_ask']} | Last: {ob['last_price']}")
-                            print(f"    NO Bid: {ob['no_bid']} | NO Ask: {ob['no_ask']}")
+                    # Calculate profits for all sets
+                    all_profits = []
                     
-                    # Calculate and display profits
-                    range_ob = orderbooks.get(range_ticker)
-                    lower_ob = orderbooks.get(lower_leg_ticker)
-                    higher_ob = orderbooks.get(higher_leg_ticker)
-                    
-                    profits = calculate_profits(range_ob, lower_ob, higher_ob)
-                    if profits:
-                        print(f"\n💰 Profit Opportunities:")
-                        print(f"  Profit 1 (Range YES overpriced): {profits['profit1']:.2f}")
-                        print(f"  Profit 2 (Range YES underpriced): {profits['profit2']:.2f}")
-                        print(f"  Profit 3 (Range NO overpriced): {profits['profit3']:.2f}")
-                        print(f"  Profit 4 (Range NO underpriced): {profits['profit4']:.2f}")
+                    for i, market_set in enumerate(market_sets):
+                        range_ob = orderbooks.get(market_set['range_ticker'])
+                        lower_ob = orderbooks.get(market_set['lower_leg_ticker'])
+                        higher_ob = orderbooks.get(market_set['higher_leg_ticker'])
                         
-                        # Update web UI if available
-                        if WEB_UI_AVAILABLE:
-                            try:
-                                ui_orderbooks = {
-                                    'range': range_ob,
-                                    'lower': lower_ob,
-                                    'higher': higher_ob
-                                }
-                                ui_tickers = {
-                                    'range': range_ticker,
-                                    'lower': lower_leg_ticker,
-                                    'higher': higher_leg_ticker
-                                }
-                                update_data(ui_orderbooks, profits, ui_tickers)
-                            except:
-                                pass  # Silently fail if UI not ready
-                        
-                        # Log to CSV
-                        if csv_filename:
-                            log_profits_to_csv(csv_filename, 
-                                             profits['profit1'], 
-                                             profits['profit2'], 
-                                             profits['profit3'], 
-                                             profits['profit4'])
+                        profits = calculate_profits(range_ob, lower_ob, higher_ob)
+                        all_profits.append(profits)
+                    
+                    # Update web UI with all sets data
+                    if WEB_UI_AVAILABLE:
+                        try:
+                            all_sets_ui_data = []
+                            for i, market_set in enumerate(market_sets):
+                                range_ob = orderbooks.get(market_set['range_ticker'])
+                                lower_ob = orderbooks.get(market_set['lower_leg_ticker'])
+                                higher_ob = orderbooks.get(market_set['higher_leg_ticker'])
+                                profits = all_profits[i] if i < len(all_profits) else None
+                                
+                                all_sets_ui_data.append({
+                                    'orderbooks': {
+                                        'range': range_ob,
+                                        'lower': lower_ob,
+                                        'higher': higher_ob
+                                    },
+                                    'profits': profits or {},
+                                    'tickers': {
+                                        'range': market_set['range_ticker'],
+                                        'lower': market_set['lower_leg_ticker'],
+                                        'higher': market_set['higher_leg_ticker']
+                                    }
+                                })
+                            update_data(all_sets_ui_data)
+                        except:
+                            pass  # Silently fail if UI not ready
+                    
+                    # Log all profits to CSV
+                    if csv_filename:
+                        log_profits_to_csv(csv_filename, all_profits)
                     
                     # Check for trades
-                    for ticker in tickers:
+                    for ticker in all_tickers:
                         check_market_trades(ticker)
                 
                 # Check for WebSocket messages with timeout
@@ -596,7 +665,7 @@ async def monitor_markets(tickers, range_ticker, lower_leg_ticker, higher_leg_ti
     except websockets.exceptions.ConnectionClosed:
         print("❌ Connection lost. Attempting to reconnect...")
         await asyncio.sleep(5)
-        await monitor_markets(tickers)
+        await monitor_markets(market_sets, csv_filename)
     except KeyboardInterrupt:
         print("\n\n👋 Stopped monitoring.")
     except Exception as e:
@@ -620,52 +689,49 @@ async def main():
         print(f"❌ No range markets found for {date_str}")
         return
     
-    # 3. Select best range market
-    best_range = find_best_range_market(range_markets)
-    if not best_range:
-        print("❌ Could not select best range market")
+    # 3. Select top 5 range markets
+    top_ranges = find_top_range_markets(range_markets, top_n=5)
+    if not top_ranges:
+        print("❌ Could not select range markets")
         return
     
-    range_ticker = best_range.get('ticker')
+    # 4. Find corresponding 'over X' markets for each range
+    market_sets = []
+    for range_market in top_ranges:
+        floor_over, cap_over = find_over_markets(range_market, date_str)
+        
+        if floor_over and cap_over:
+            market_sets.append({
+                'range_ticker': range_market.get('ticker'),
+                'lower_leg_ticker': floor_over.get('ticker'),
+                'higher_leg_ticker': cap_over.get('ticker')
+            })
+        else:
+            print(f"⚠️  Skipping {range_market.get('ticker')} - missing leg markets")
     
-    # 4. Find corresponding 'over X' markets
-    floor_over, cap_over = find_over_markets(best_range, date_str)
-    
-    # 5. Build list of markets to monitor
-    tickers_to_monitor = [range_ticker]
-    lower_leg_ticker = None
-    higher_leg_ticker = None
-    
-    if floor_over:
-        lower_leg_ticker = floor_over.get('ticker')
-        tickers_to_monitor.append(lower_leg_ticker)
-    if cap_over:
-        higher_leg_ticker = cap_over.get('ticker')
-        tickers_to_monitor.append(higher_leg_ticker)
-    
-    print(f"\n📊 Markets to monitor: {len(tickers_to_monitor)}")
-    
-    if not lower_leg_ticker or not higher_leg_ticker:
-        print("❌ Missing leg markets - cannot calculate profits")
+    if not market_sets:
+        print("❌ No complete market sets found - cannot calculate profits")
         return
     
-    # 6. Initialize CSV logging
+    print(f"\n📊 Monitoring {len(market_sets)} complete market sets ({len(market_sets) * 3} total markets)")
+    
+    # 5. Initialize CSV logging
     csv_filename = f"profits_{date_str}.csv"
-    init_profit_csv(csv_filename)
+    init_profit_csv(csv_filename, num_ranges=len(market_sets))
     
-    # 7. Initialize web UI if available
+    # 6. Initialize web UI if available
     if WEB_UI_AVAILABLE:
         try:
-            # Start web server in background thread
-            ui_thread = threading.Thread(target=run_server, daemon=True, args=('127.0.0.1', 5000, False))
+            # Start web server in background thread (use 5001 to avoid macOS AirPlay conflict on 5000)
+            ui_thread = threading.Thread(target=run_server, daemon=True, args=('127.0.0.1', 5001, False))
             ui_thread.start()
-            print("🌐 Web UI started at http://127.0.0.1:5000")
+            print("🌐 Web UI started at http://127.0.0.1:5001")
             time.sleep(1)  # Give server a moment to start
         except Exception as e:
             print(f"⚠️  Could not start web UI: {e}")
     
-    # 8. Start monitoring
-    await monitor_markets(tickers_to_monitor, range_ticker, lower_leg_ticker, higher_leg_ticker, csv_filename)
+    # 7. Start monitoring
+    await monitor_markets(market_sets, csv_filename)
 
 if __name__ == "__main__":
     try:

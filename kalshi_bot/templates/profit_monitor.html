@@ -20,7 +20,7 @@
         }
         
         .container {
-            max-width: 1200px;
+            max-width: 1400px;
             margin: 0 auto;
         }
         
@@ -41,16 +41,29 @@
             font-size: 0.9em;
         }
         
-        .section {
+        .set-section {
             background: rgba(255, 255, 255, 0.05);
             border-radius: 10px;
             padding: 20px;
-            margin-bottom: 20px;
+            margin-bottom: 25px;
             border: 1px solid rgba(255, 255, 255, 0.1);
         }
         
+        .set-title {
+            font-size: 1.5em;
+            margin-bottom: 15px;
+            color: #4A90E2;
+            font-weight: bold;
+            border-bottom: 2px solid rgba(74, 144, 226, 0.3);
+            padding-bottom: 10px;
+        }
+        
+        .orderbook-section {
+            margin-bottom: 20px;
+        }
+        
         .section-title {
-            font-size: 1.3em;
+            font-size: 1.2em;
             margin-bottom: 15px;
             color: #4A90E2;
             font-weight: bold;
@@ -148,15 +161,6 @@
         .status.inactive {
             color: #FF6B6B;
         }
-        
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        
-        .loading {
-            animation: pulse 1.5s ease-in-out infinite;
-        }
     </style>
 </head>
 <body>
@@ -164,48 +168,7 @@
         <h1>📊 Kalshi Profit Monitor</h1>
         <div class="subtitle" id="lastUpdate">Waiting for data...</div>
         
-        <div class="section">
-            <div class="section-title">Orderbook</div>
-            <div id="orderbooks">
-                <div class="market-card">
-                    <div class="market-name">Range</div>
-                    <div class="ticker" id="ticker-range">-</div>
-                    <div class="orderbook-data" id="data-range">Loading...</div>
-                </div>
-                <div class="market-card">
-                    <div class="market-name">Lower Leg</div>
-                    <div class="ticker" id="ticker-lower">-</div>
-                    <div class="orderbook-data" id="data-lower">Loading...</div>
-                </div>
-                <div class="market-card">
-                    <div class="market-name">Higher Leg</div>
-                    <div class="ticker" id="ticker-higher">-</div>
-                    <div class="orderbook-data" id="data-higher">Loading...</div>
-                </div>
-            </div>
-        </div>
-        
-        <div class="section">
-            <div class="section-title">💰 Profit Opportunities</div>
-            <div class="profit-grid">
-                <div class="profit-card neutral" id="profit1-card">
-                    <div class="profit-label">Profit 1 (Range YES overpriced)</div>
-                    <div class="profit-value" id="profit1-value">0.00</div>
-                </div>
-                <div class="profit-card neutral" id="profit2-card">
-                    <div class="profit-label">Profit 2 (Range YES underpriced)</div>
-                    <div class="profit-value" id="profit2-value">0.00</div>
-                </div>
-                <div class="profit-card neutral" id="profit3-card">
-                    <div class="profit-label">Profit 3 (Range NO overpriced)</div>
-                    <div class="profit-value" id="profit3-value">0.00</div>
-                </div>
-                <div class="profit-card neutral" id="profit4-card">
-                    <div class="profit-label">Profit 4 (Range NO underpriced)</div>
-                    <div class="profit-value" id="profit4-value">0.00</div>
-                </div>
-            </div>
-        </div>
+        <div id="setsContainer"></div>
         
         <div class="status active" id="status">🟢 Connected</div>
     </div>
@@ -216,50 +179,91 @@
             document.getElementById('lastUpdate').textContent = 
                 `Last Update: ${data.last_update || 'Never'}`;
             
-            // Update orderbooks
-            const markets = [
-                {key: 'range', name: 'Range'},
-                {key: 'lower', name: 'Lower Leg'},
-                {key: 'higher', name: 'Higher Leg'}
-            ];
+            const setsContainer = document.getElementById('setsContainer');
+            const sets = data.sets || [];
             
-            markets.forEach(market => {
-                const ob = data.orderbooks[market.key];
-                const ticker = data.tickers[market.key] || '-';
+            // Clear container
+            setsContainer.innerHTML = '';
+            
+            // Create HTML for each set
+            sets.forEach((setData, index) => {
+                const setNum = index + 1;
+                const orderbooks = setData.orderbooks || {};
+                const profits = setData.profits || {};
+                const tickers = setData.tickers || {};
                 
-                document.getElementById(`ticker-${market.key}`).textContent = ticker;
+                let setHTML = `
+                    <div class="set-section">
+                        <div class="set-title">Set ${setNum}</div>
+                `;
                 
-                if (ob) {
-                    const html = `
-                        YES Bid: ${String(ob.yes_bid).padStart(3)} | YES Ask: ${String(ob.yes_ask).padStart(3)} | Last: ${String(ob.last_price).padStart(3)}<br>
-                        NO Bid:  ${String(ob.no_bid).padStart(3)} | NO Ask:  ${String(ob.no_ask).padStart(3)}
+                // Orderbook section
+                setHTML += `
+                    <div class="orderbook-section">
+                        <div class="section-title">Orderbook</div>
+                `;
+                
+                const markets = [
+                    {key: 'range', name: 'Range'},
+                    {key: 'lower', name: 'Lower Leg'},
+                    {key: 'higher', name: 'Higher Leg'}
+                ];
+                
+                markets.forEach(market => {
+                    const ob = orderbooks[market.key];
+                    const ticker = tickers[market.key] || '-';
+                    
+                    setHTML += `
+                        <div class="market-card">
+                            <div class="market-name">${market.name}</div>
+                            <div class="ticker">${ticker}</div>
                     `;
-                    document.getElementById(`data-${market.key}`).innerHTML = html;
-                } else {
-                    document.getElementById(`data-${market.key}`).textContent = 'No data';
-                }
-            });
-            
-            // Update profits
-            const profits = data.profits || {};
-            const profitKeys = ['profit1', 'profit2', 'profit3', 'profit4'];
-            
-            profitKeys.forEach((key, index) => {
-                const value = profits[key] || 0;
-                const valueElement = document.getElementById(`${key}-value`);
-                const cardElement = document.getElementById(`${key}-card`);
+                    
+                    if (ob && ob.yes_bid !== undefined) {
+                        setHTML += `
+                            <div class="orderbook-data">
+                                YES Bid: ${String(ob.yes_bid || 0).padStart(3)} | YES Ask: ${String(ob.yes_ask || 0).padStart(3)} | Last: ${String(ob.last_price || 0).padStart(3)}<br>
+                                NO Bid:  ${String(ob.no_bid || 0).padStart(3)} | NO Ask:  ${String(ob.no_ask || 0).padStart(3)}
+                            </div>
+                        `;
+                    } else {
+                        setHTML += '<div class="orderbook-data">No data</div>';
+                    }
+                    
+                    setHTML += '</div>';
+                });
                 
-                valueElement.textContent = value.toFixed(2);
+                setHTML += '</div>'; // Close orderbook-section
                 
-                // Update card style
-                cardElement.classList.remove('positive', 'negative', 'neutral');
-                if (value > 0) {
-                    cardElement.classList.add('positive');
-                } else if (value < 0) {
-                    cardElement.classList.add('negative');
-                } else {
-                    cardElement.classList.add('neutral');
-                }
+                // Profit section
+                setHTML += `
+                    <div class="section-title">💰 Profit Opportunities</div>
+                    <div class="profit-grid">
+                `;
+                
+                const profitNames = [
+                    {key: 'profit1', label: 'Profit 1 (Range YES overpriced)', color: '#4A90E2'},
+                    {key: 'profit2', label: 'Profit 2 (Range YES underpriced)', color: '#50C878'},
+                    {key: 'profit3', label: 'Profit 3 (Range NO overpriced)', color: '#FF6B6B'},
+                    {key: 'profit4', label: 'Profit 4 (Range NO underpriced)', color: '#FFA500'}
+                ];
+                
+                profitNames.forEach(profit => {
+                    const value = profits[profit.key] || 0;
+                    const cardClass = value > 0 ? 'positive' : (value < 0 ? 'negative' : 'neutral');
+                    
+                    setHTML += `
+                        <div class="profit-card ${cardClass}">
+                            <div class="profit-label">${profit.label}</div>
+                            <div class="profit-value">${value.toFixed(2)}</div>
+                        </div>
+                    `;
+                });
+                
+                setHTML += '</div>'; // Close profit-grid
+                setHTML += '</div>'; // Close set-section
+                
+                setsContainer.innerHTML += setHTML;
             });
             
             // Update status
@@ -289,12 +293,11 @@
                 });
         }
         
-        // Fetch data every second
-        setInterval(fetchData, 1000);
+        // Fetch data every 500ms for faster updates
+        setInterval(fetchData, 500);
         
         // Initial fetch
         fetchData();
     </script>
 </body>
 </html>
-
