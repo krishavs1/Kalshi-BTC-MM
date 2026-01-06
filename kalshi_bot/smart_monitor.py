@@ -40,6 +40,9 @@ async def monitor_markets(market_sets_ref, csv_filename_ref, date_str_ref):
     last_market_refresh = time.time()
     MARKET_REFRESH_INTERVAL = 300  # Refresh market selection every 5 minutes (300 seconds)
     
+    # Create aiohttp session once for reuse (performance optimization)
+    session = aiohttp.ClientSession()
+    
     try:
         async with websockets.connect(WS_URL, additional_headers=headers) as websocket:
             print("✅ Connected to WebSocket!")
@@ -131,16 +134,15 @@ async def monitor_markets(market_sets_ref, csv_filename_ref, date_str_ref):
                         ])
                     all_tickers = list(set(all_tickers))  # Remove duplicates
                     
-                    # Get orderbooks for all markets concurrently using async
+                    # Get orderbooks for all markets concurrently using async (reuse session)
                     orderbooks = {}
-                    async with aiohttp.ClientSession() as session:
-                        tasks = [get_market_orderbook_async(session, ticker) for ticker in all_tickers]
-                        results = await asyncio.gather(*tasks, return_exceptions=True)
-                        for ticker, result in zip(all_tickers, results):
-                            if isinstance(result, Exception) or result is None:
-                                orderbooks[ticker] = None
-                            else:
-                                orderbooks[ticker] = result
+                    tasks = [get_market_orderbook_async(session, ticker) for ticker in all_tickers]
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    for ticker, result in zip(all_tickers, results):
+                        if isinstance(result, Exception) or result is None:
+                            orderbooks[ticker] = None
+                        else:
+                            orderbooks[ticker] = result
                     
                     # Calculate profits for all sets
                     all_profits = []
@@ -217,17 +219,23 @@ async def monitor_markets(market_sets_ref, csv_filename_ref, date_str_ref):
                     
                 except:
                     continue
-                    
     except websockets.exceptions.ConnectionClosed:
         print("❌ Connection lost. Attempting to reconnect...")
+        await session.close()
         await asyncio.sleep(5)
         await monitor_markets(market_sets_ref, csv_filename_ref, date_str_ref)
     except KeyboardInterrupt:
         print("\n\n👋 Stopped monitoring.")
+        await session.close()
     except Exception as e:
         print(f"❌ Error: {e}")
+        await session.close()
         import traceback
         traceback.print_exc()
+    finally:
+        # Close the aiohttp session when done
+        if not session.closed:
+            await session.close()
 
 async def main():
     """Main function"""

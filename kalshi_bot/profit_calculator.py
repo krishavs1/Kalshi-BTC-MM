@@ -22,7 +22,7 @@ def calculate_profits(range_ob, lower_leg_ob, higher_leg_ob):
     profit1 = (range_yes_ask - 1) - lower_yes_ask - higher_no_ask + 100
     
     # Profit 2: (Ask of Range NO − 1) − Ask of lower leg NO − Ask of higher leg YES + 100
-    profit2 = (range_no_ask - 1) - lower_no_ask - higher_yes_ask + 100
+    profit2 = (range_no_ask - 1) - lower_no_ask - higher_yes_ask 
     
     return {
         'profit1': profit1,
