@@ -386,9 +386,9 @@
     <div class="container">
         <div class="header">
             <h1>📊 Kalshi Profit Monitor</h1>
-            <div class="subtitle" id="lastUpdate">
+            <div class="subtitle">
                 <span class="status-indicator inactive" id="statusIndicator"></span>
-                Waiting for data...
+                <span id="lastUpdate">Waiting for data...</span>
             </div>
         </div>
         
@@ -402,174 +402,221 @@
         <div class="footer">
             <div class="status active" id="status">
                 <span class="status-indicator active" id="footerIndicator"></span>
-                Connected
+                <span id="statusText">Connected</span>
             </div>
         </div>
     </div>
     
     <script>
         function updateDisplay(data) {
-            // Update last update time
-            const lastUpdateEl = document.getElementById('lastUpdate');
-            const statusIndicator = document.getElementById('statusIndicator');
-            const footerIndicator = document.getElementById('footerIndicator');
-            const statusEl = document.getElementById('status');
-            
-            if (data.last_update) {
-                lastUpdateEl.innerHTML = `
-                    <span class="status-indicator active"></span>
-                    Last Update: ${data.last_update}
-                `;
-                statusIndicator.className = 'status-indicator active';
-                footerIndicator.className = 'status-indicator active';
-                statusEl.className = 'status active';
-                statusEl.innerHTML = '<span class="status-indicator active"></span>Connected';
-            } else {
-                lastUpdateEl.innerHTML = `
-                    <span class="status-indicator inactive"></span>
-                    Waiting for data...
-                `;
-                statusIndicator.className = 'status-indicator inactive';
-                footerIndicator.className = 'status-indicator inactive';
-                statusEl.className = 'status inactive';
-                statusEl.innerHTML = '<span class="status-indicator inactive"></span>Disconnected';
-            }
-            
-            const setsContainer = document.getElementById('setsContainer');
-            const sets = data.sets || [];
-            
-            if (sets.length === 0) {
-                setsContainer.innerHTML = `
-                    <div class="loading">
-                        <div class="spinner"></div>
-                        No market data available
-                    </div>
-                `;
-                return;
-            }
-            
-            // Clear container
-            setsContainer.className = 'sets-container';
-            setsContainer.innerHTML = '';
-            
-            // Create HTML for each set
-            sets.forEach((setData, index) => {
-                const setNum = index + 1;
-                const orderbooks = setData.orderbooks || {};
-                const profits = setData.profits || {};
-                const tickers = setData.tickers || {};
+            try {
+                // Debug log (commented out to reduce console spam)
+                // console.log('updateDisplay called with:', data);
                 
-                let setHTML = `
-                    <div class="set-section">
-                        <div class="set-title">
-                            <span class="set-number">${setNum}</span>
-                            Market Set ${setNum}
+                // Update last update time
+                const lastUpdateEl = document.getElementById('lastUpdate');
+                const statusIndicator = document.getElementById('statusIndicator');
+                const footerIndicator = document.getElementById('footerIndicator');
+                const statusEl = document.getElementById('status');
+                const statusText = document.getElementById('statusText');
+                
+                if (!lastUpdateEl || !statusIndicator || !footerIndicator || !statusEl || !statusText) {
+                    console.error('Required DOM elements not found', {
+                        lastUpdateEl: !!lastUpdateEl,
+                        statusIndicator: !!statusIndicator,
+                        footerIndicator: !!footerIndicator,
+                        statusEl: !!statusEl,
+                        statusText: !!statusText
+                    });
+                    return;
+                }
+                
+                if (data.last_update) {
+                    lastUpdateEl.textContent = `Last Update: ${data.last_update}`;
+                    statusIndicator.className = 'status-indicator active';
+                    footerIndicator.className = 'status-indicator active';
+                    statusEl.className = 'status active';
+                    statusText.textContent = 'Connected';
+                } else {
+                    lastUpdateEl.textContent = 'Waiting for data...';
+                    statusIndicator.className = 'status-indicator inactive';
+                    footerIndicator.className = 'status-indicator inactive';
+                    statusEl.className = 'status inactive';
+                    statusText.textContent = 'Disconnected';
+                }
+                
+                const setsContainer = document.getElementById('setsContainer');
+                if (!setsContainer) {
+                    console.error('setsContainer element not found');
+                    return;
+                }
+                
+                const sets = data.sets || [];
+                // Debug log (commented out to reduce console spam)
+                // console.log('Number of sets:', sets.length);
+                
+                if (sets.length === 0) {
+                    setsContainer.className = '';
+                    setsContainer.innerHTML = `
+                        <div class="loading">
+                            <div class="spinner"></div>
+                            No market data available (sets array is empty)
                         </div>
-                `;
+                    `;
+                    return;
+                }
                 
-                // Orderbook section
-                setHTML += `
-                    <div class="section-title">📈 Orderbook</div>
-                    <div class="orderbook-grid">
-                `;
+                // Build all HTML first, then set it once
+                let allHTML = '';
                 
-                const markets = [
-                    {key: 'range', name: 'Range', icon: '🎯'},
-                    {key: 'lower', name: 'Lower Leg', icon: '⬇️'},
-                    {key: 'higher', name: 'Higher Leg', icon: '⬆️'}
-                ];
-                
-                markets.forEach(market => {
-                    const ob = orderbooks[market.key];
-                    const ticker = tickers[market.key] || '-';
+                // Create HTML for each set
+                sets.forEach((setData, index) => {
+                    const setNum = index + 1;
+                    const orderbooks = setData.orderbooks || {};
+                    const profits = setData.profits || {};
+                    const tickers = setData.tickers || {};
                     
-                    setHTML += `
-                        <div class="market-card">
-                            <div class="market-header">
-                                <div class="market-name">${market.icon} ${market.name}</div>
-                                <div class="ticker">${ticker}</div>
+                    let setHTML = `
+                        <div class="set-section">
+                            <div class="set-title">
+                                <span class="set-number">${setNum}</span>
+                                Market Set ${setNum}
                             </div>
                     `;
                     
-                    if (ob && ob.yes_bid !== undefined) {
+                    // Orderbook section
+                    setHTML += `
+                        <div class="section-title">📈 Orderbook</div>
+                        <div class="orderbook-grid">
+                    `;
+                    
+                    const markets = [
+                        {key: 'range', name: 'Range', icon: '🎯'},
+                        {key: 'lower', name: 'Lower Leg', icon: '⬇️'},
+                        {key: 'higher', name: 'Higher Leg', icon: '⬆️'}
+                    ];
+                    
+                    markets.forEach(market => {
+                        const ob = orderbooks[market.key];
+                        const ticker = tickers[market.key] || '-';
+                        
                         setHTML += `
-                            <div class="orderbook-data">
-                                <div class="orderbook-row">
-                                    <span class="orderbook-label">YES Bid:</span>
-                                    <span class="orderbook-value value-yes">${String(ob.yes_bid || 0).padStart(3)}</span>
+                            <div class="market-card">
+                                <div class="market-header">
+                                    <div class="market-name">${market.icon} ${market.name}</div>
+                                    <div class="ticker">${ticker}</div>
                                 </div>
-                                <div class="orderbook-row">
-                                    <span class="orderbook-label">YES Ask:</span>
-                                    <span class="orderbook-value value-yes">${String(ob.yes_ask || 0).padStart(3)}</span>
+                        `;
+                        
+                        if (ob && ob.yes_bid !== undefined) {
+                            setHTML += `
+                                <div class="orderbook-data">
+                                    <div class="orderbook-row">
+                                        <span class="orderbook-label">YES Bid:</span>
+                                        <span class="orderbook-value value-yes">${String(ob.yes_bid || 0).padStart(3)}</span>
+                                    </div>
+                                    <div class="orderbook-row">
+                                        <span class="orderbook-label">YES Ask:</span>
+                                        <span class="orderbook-value value-yes">${String(ob.yes_ask || 0).padStart(3)}</span>
+                                    </div>
+                                    <div class="orderbook-row">
+                                        <span class="orderbook-label">NO Bid:</span>
+                                        <span class="orderbook-value value-no">${String(ob.no_bid || 0).padStart(3)}</span>
+                                    </div>
+                                    <div class="orderbook-row">
+                                        <span class="orderbook-label">NO Ask:</span>
+                                        <span class="orderbook-value value-no">${String(ob.no_ask || 0).padStart(3)}</span>
+                                    </div>
+                                    <div class="orderbook-row">
+                                        <span class="orderbook-label">Last:</span>
+                                        <span class="orderbook-value value-last">${String(ob.last_price || 0).padStart(3)}</span>
+                                    </div>
                                 </div>
-                                <div class="orderbook-row">
-                                    <span class="orderbook-label">NO Bid:</span>
-                                    <span class="orderbook-value value-no">${String(ob.no_bid || 0).padStart(3)}</span>
-                                </div>
-                                <div class="orderbook-row">
-                                    <span class="orderbook-label">NO Ask:</span>
-                                    <span class="orderbook-value value-no">${String(ob.no_ask || 0).padStart(3)}</span>
-                                </div>
-                                <div class="orderbook-row">
-                                    <span class="orderbook-label">Last:</span>
-                                    <span class="orderbook-value value-last">${String(ob.last_price || 0).padStart(3)}</span>
-                                </div>
+                            `;
+                        } else {
+                            setHTML += '<div class="orderbook-data" style="color: #6b7280;">No data available</div>';
+                        }
+                        
+                        setHTML += '</div>';
+                    });
+                    
+                    setHTML += '</div>'; // Close orderbook-grid
+                    setHTML += '<div class="section-divider"></div>';
+                    
+                    // Profit section
+                    setHTML += `
+                        <div class="profit-section">
+                            <div class="section-title">💰 Profit Opportunities</div>
+                            <div class="profit-grid">
+                    `;
+                    
+                    const profitNames = [
+                        {key: 'profit1', label: 'Profit 1', sublabel: 'Range YES limit', icon: '📊'},
+                        {key: 'profit2', label: 'Profit 2', sublabel: 'Range NO limit', icon: '💎'}
+                    ];
+                    
+                    profitNames.forEach(profit => {
+                        const value = profits[profit.key] || 0;
+                        const cardClass = value > 0 ? 'positive' : (value < 0 ? 'negative' : 'neutral');
+                        
+                        setHTML += `
+                            <div class="profit-card ${cardClass}">
+                                <div class="profit-label">${profit.icon} ${profit.label}</div>
+                                <div class="profit-value">${value >= 0 ? '+' : ''}${value.toFixed(2)}</div>
+                                <div style="font-size: 0.75em; color: #6b7280; margin-top: 4px;">${profit.sublabel}</div>
                             </div>
                         `;
-                    } else {
-                        setHTML += '<div class="orderbook-data" style="color: #6b7280;">No data available</div>';
-                    }
+                    });
                     
-                    setHTML += '</div>';
+                    setHTML += '</div>'; // Close profit-grid
+                    setHTML += '</div>'; // Close profit-section
+                    setHTML += '</div>'; // Close set-section
+                    
+                    allHTML += setHTML;
                 });
                 
-                setHTML += '</div>'; // Close orderbook-grid
-                setHTML += '<div class="section-divider"></div>';
+                // Set all HTML at once
+                setsContainer.className = 'sets-container';
+                setsContainer.innerHTML = allHTML;
                 
-                // Profit section
-                setHTML += `
-                    <div class="profit-section">
-                        <div class="section-title">💰 Profit Opportunities</div>
-                        <div class="profit-grid">
-                `;
-                
-                const profitNames = [
-                    {key: 'profit1', label: 'Profit 1', sublabel: 'Range YES limit', icon: '📊'},
-                    {key: 'profit2', label: 'Profit 2', sublabel: 'Range NO limit', icon: '💎'}
-                ];
-                
-                profitNames.forEach(profit => {
-                    const value = profits[profit.key] || 0;
-                    const cardClass = value > 0 ? 'positive' : (value < 0 ? 'negative' : 'neutral');
-                    
-                    setHTML += `
-                        <div class="profit-card ${cardClass}">
-                            <div class="profit-label">${profit.icon} ${profit.label}</div>
-                            <div class="profit-value">${value >= 0 ? '+' : ''}${value.toFixed(2)}</div>
-                            <div style="font-size: 0.75em; color: #6b7280; margin-top: 4px;">${profit.sublabel}</div>
-                        </div>
-                    `;
-                });
-                
-                setHTML += '</div>'; // Close profit-grid
-                setHTML += '</div>'; // Close profit-section
-                setHTML += '</div>'; // Close set-section
-                
-                setsContainer.innerHTML += setHTML;
-            });
+            } catch (error) {
+                console.error('Error in updateDisplay:', error);
+                console.error('Error stack:', error.stack);
+                console.error('Data received:', data);
+                const statusEl = document.getElementById('status');
+                const statusText = document.getElementById('statusText');
+                const footerIndicator = document.getElementById('footerIndicator');
+                if (statusEl && statusText && footerIndicator) {
+                    footerIndicator.className = 'status-indicator inactive';
+                    statusEl.className = 'status inactive';
+                    statusText.textContent = 'Error: ' + error.message;
+                }
+            }
         }
         
         function fetchData() {
             fetch('/api/data')
-                .then(response => response.json())
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.json();
+                })
                 .then(data => {
+                    // Debug log (commented out to reduce console spam)
+                    // console.log('Data received:', data);
                     updateDisplay(data);
                 })
                 .catch(error => {
                     console.error('Error fetching data:', error);
-                    document.getElementById('status').innerHTML = 
-                        '<span class="status-indicator inactive"></span>Error';
-                    document.getElementById('status').className = 'status inactive';
+                    const statusEl = document.getElementById('status');
+                    const statusText = document.getElementById('statusText');
+                    const footerIndicator = document.getElementById('footerIndicator');
+                    if (statusEl && statusText && footerIndicator) {
+                        footerIndicator.className = 'status-indicator inactive';
+                        statusEl.className = 'status inactive';
+                        statusText.textContent = 'Error: ' + error.message;
+                    }
                 });
         }
         

@@ -36,6 +36,9 @@ def index():
 def get_data():
     """API endpoint to get latest data"""
     with data_lock:
+        # Debug: print what we're sending
+        import json
+        print(f"DEBUG: Sending {len(latest_data.get('sets', []))} sets to UI")
         return jsonify(latest_data)
 
 def run_server(host='127.0.0.1', port=5000, debug=False):
