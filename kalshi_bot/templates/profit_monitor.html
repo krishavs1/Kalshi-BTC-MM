@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kalshi Profit Monitor</title>
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        
         * {
             margin: 0;
             padding: 0;
@@ -12,177 +14,442 @@
         }
         
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #1e1e1e 0%, #2d2d2d 100%);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
             color: #ffffff;
             padding: 20px;
             min-height: 100vh;
+            line-height: 1.6;
         }
         
         .container {
-            max-width: 1400px;
+            max-width: 1600px;
             margin: 0 auto;
         }
         
-        h1 {
+        .header {
             text-align: center;
+            margin-bottom: 40px;
+            padding: 30px 20px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+        
+        h1 {
+            font-size: 3em;
+            font-weight: 700;
             margin-bottom: 10px;
-            font-size: 2.5em;
-            background: linear-gradient(90deg, #4A90E2, #50C878);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             background-clip: text;
+            text-shadow: 0 0 30px rgba(102, 126, 234, 0.5);
         }
         
         .subtitle {
-            text-align: center;
-            color: #888888;
+            color: #b8b8b8;
+            font-size: 1.1em;
+            font-weight: 400;
+            margin-top: 10px;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+            animation: pulse 2s infinite;
+        }
+        
+        .status-indicator.active {
+            background: #10b981;
+            box-shadow: 0 0 10px rgba(16, 185, 129, 0.6);
+        }
+        
+        .status-indicator.inactive {
+            background: #ef4444;
+            box-shadow: 0 0 10px rgba(239, 68, 68, 0.6);
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .sets-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
+            gap: 25px;
             margin-bottom: 30px;
-            font-size: 0.9em;
         }
         
         .set-section {
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 10px;
-            padding: 20px;
-            margin-bottom: 25px;
+            background: rgba(255, 255, 255, 0.06);
+            border-radius: 16px;
+            padding: 25px;
             border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+            transition: all 0.3s ease;
+        }
+        
+        .set-section:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 40px rgba(102, 126, 234, 0.3);
+            border-color: rgba(102, 126, 234, 0.3);
         }
         
         .set-title {
-            font-size: 1.5em;
-            margin-bottom: 15px;
-            color: #4A90E2;
-            font-weight: bold;
-            border-bottom: 2px solid rgba(74, 144, 226, 0.3);
-            padding-bottom: 10px;
+            font-size: 1.6em;
+            margin-bottom: 20px;
+            color: #ffffff;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
         }
         
-        .orderbook-section {
-            margin-bottom: 20px;
+        .set-number {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 36px;
+            height: 36px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 10px;
+            font-weight: 700;
+            font-size: 0.9em;
+        }
+        
+        .section-divider {
+            height: 2px;
+            background: linear-gradient(90deg, transparent, rgba(102, 126, 234, 0.5), transparent);
+            margin: 20px 0;
         }
         
         .section-title {
-            font-size: 1.2em;
+            font-size: 1.1em;
             margin-bottom: 15px;
-            color: #4A90E2;
-            font-weight: bold;
+            color: #a5b4fc;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-size: 0.85em;
+        }
+        
+        .orderbook-grid {
+            display: grid;
+            gap: 12px;
+            margin-bottom: 25px;
         }
         
         .market-card {
             background: rgba(0, 0, 0, 0.3);
-            border-radius: 8px;
-            padding: 15px;
-            margin-bottom: 15px;
-            border-left: 4px solid #4A90E2;
+            border-radius: 12px;
+            padding: 16px;
+            border-left: 4px solid #667eea;
+            transition: all 0.2s ease;
+            backdrop-filter: blur(5px);
+        }
+        
+        .market-card:hover {
+            background: rgba(102, 126, 234, 0.1);
+            border-left-color: #f093fb;
+            transform: translateX(4px);
+        }
+        
+        .market-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
         }
         
         .market-name {
-            font-weight: bold;
-            font-size: 1.1em;
-            margin-bottom: 5px;
+            font-weight: 600;
+            font-size: 1em;
             color: #ffffff;
         }
         
         .ticker {
-            color: #888888;
-            font-size: 0.85em;
-            margin-bottom: 10px;
+            color: #9ca3af;
+            font-size: 0.75em;
             font-family: 'Courier New', monospace;
+            background: rgba(0, 0, 0, 0.3);
+            padding: 4px 8px;
+            border-radius: 6px;
         }
         
         .orderbook-data {
             font-family: 'Courier New', monospace;
-            font-size: 0.95em;
-            line-height: 1.6;
-            color: #00ff00;
+            font-size: 0.9em;
+            line-height: 1.8;
+            color: #a7f3d0;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+        
+        .orderbook-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        
+        .orderbook-label {
+            color: #9ca3af;
+            min-width: 70px;
+            font-weight: 500;
+        }
+        
+        .orderbook-value {
+            color: #a7f3d0;
+            font-weight: 600;
+        }
+        
+        .value-yes {
+            color: #34d399;
+        }
+        
+        .value-no {
+            color: #fbbf24;
+        }
+        
+        .value-last {
+            color: #60a5fa;
+        }
+        
+        .profit-section {
+            margin-top: 25px;
         }
         
         .profit-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 15px;
         }
         
         .profit-card {
-            background: rgba(0, 0, 0, 0.3);
-            border-radius: 8px;
-            padding: 15px;
+            background: rgba(0, 0, 0, 0.4);
+            border-radius: 12px;
+            padding: 18px;
             border-left: 4px solid;
+            transition: all 0.3s ease;
+            backdrop-filter: blur(5px);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .profit-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, currentColor, transparent);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+        
+        .profit-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+        }
+        
+        .profit-card:hover::before {
+            opacity: 1;
         }
         
         .profit-card.positive {
-            border-left-color: #50C878;
+            border-left-color: #10b981;
+        }
+        
+        .profit-card.positive:hover {
+            box-shadow: 0 8px 20px rgba(16, 185, 129, 0.3);
         }
         
         .profit-card.negative {
-            border-left-color: #FF6B6B;
+            border-left-color: #ef4444;
+        }
+        
+        .profit-card.negative:hover {
+            box-shadow: 0 8px 20px rgba(239, 68, 68, 0.3);
         }
         
         .profit-card.neutral {
-            border-left-color: #888888;
+            border-left-color: #6b7280;
         }
         
         .profit-label {
-            font-size: 0.9em;
-            color: #888888;
-            margin-bottom: 5px;
+            font-size: 0.8em;
+            color: #9ca3af;
+            margin-bottom: 8px;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
         
         .profit-value {
-            font-size: 1.8em;
-            font-weight: bold;
+            font-size: 2em;
+            font-weight: 700;
             font-family: 'Courier New', monospace;
+            transition: transform 0.2s ease;
+        }
+        
+        .profit-card:hover .profit-value {
+            transform: scale(1.05);
         }
         
         .profit-card.positive .profit-value {
-            color: #50C878;
+            color: #10b981;
+            text-shadow: 0 0 10px rgba(16, 185, 129, 0.5);
         }
         
         .profit-card.negative .profit-value {
-            color: #FF6B6B;
+            color: #ef4444;
+            text-shadow: 0 0 10px rgba(239, 68, 68, 0.5);
         }
         
         .profit-card.neutral .profit-value {
-            color: #888888;
+            color: #9ca3af;
+        }
+        
+        .footer {
+            text-align: center;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
         }
         
         .status {
-            text-align: center;
-            color: #888888;
-            font-size: 0.85em;
-            margin-top: 20px;
+            font-size: 0.95em;
+            color: #9ca3af;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
         }
         
         .status.active {
-            color: #50C878;
+            color: #10b981;
         }
         
         .status.inactive {
-            color: #FF6B6B;
+            color: #ef4444;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #9ca3af;
+            font-size: 1.1em;
+        }
+        
+        .spinner {
+            border: 3px solid rgba(102, 126, 234, 0.3);
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        @media (max-width: 768px) {
+            .sets-container {
+                grid-template-columns: 1fr;
+            }
+            
+            h1 {
+                font-size: 2em;
+            }
+            
+            .profit-grid {
+                grid-template-columns: 1fr;
+            }
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>📊 Kalshi Profit Monitor</h1>
-        <div class="subtitle" id="lastUpdate">Waiting for data...</div>
+        <div class="header">
+            <h1>📊 Kalshi Profit Monitor</h1>
+            <div class="subtitle" id="lastUpdate">
+                <span class="status-indicator inactive" id="statusIndicator"></span>
+                Waiting for data...
+            </div>
+        </div>
         
-        <div id="setsContainer"></div>
+        <div id="setsContainer">
+            <div class="loading">
+                <div class="spinner"></div>
+                Loading market data...
+            </div>
+        </div>
         
-        <div class="status active" id="status">🟢 Connected</div>
+        <div class="footer">
+            <div class="status active" id="status">
+                <span class="status-indicator active" id="footerIndicator"></span>
+                Connected
+            </div>
+        </div>
     </div>
     
     <script>
         function updateDisplay(data) {
             // Update last update time
-            document.getElementById('lastUpdate').textContent = 
-                `Last Update: ${data.last_update || 'Never'}`;
+            const lastUpdateEl = document.getElementById('lastUpdate');
+            const statusIndicator = document.getElementById('statusIndicator');
+            const footerIndicator = document.getElementById('footerIndicator');
+            const statusEl = document.getElementById('status');
+            
+            if (data.last_update) {
+                lastUpdateEl.innerHTML = `
+                    <span class="status-indicator active"></span>
+                    Last Update: ${data.last_update}
+                `;
+                statusIndicator.className = 'status-indicator active';
+                footerIndicator.className = 'status-indicator active';
+                statusEl.className = 'status active';
+                statusEl.innerHTML = '<span class="status-indicator active"></span>Connected';
+            } else {
+                lastUpdateEl.innerHTML = `
+                    <span class="status-indicator inactive"></span>
+                    Waiting for data...
+                `;
+                statusIndicator.className = 'status-indicator inactive';
+                footerIndicator.className = 'status-indicator inactive';
+                statusEl.className = 'status inactive';
+                statusEl.innerHTML = '<span class="status-indicator inactive"></span>Disconnected';
+            }
             
             const setsContainer = document.getElementById('setsContainer');
             const sets = data.sets || [];
             
+            if (sets.length === 0) {
+                setsContainer.innerHTML = `
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        No market data available
+                    </div>
+                `;
+                return;
+            }
+            
             // Clear container
+            setsContainer.className = 'sets-container';
             setsContainer.innerHTML = '';
             
             // Create HTML for each set
@@ -194,19 +461,22 @@
                 
                 let setHTML = `
                     <div class="set-section">
-                        <div class="set-title">Set ${setNum}</div>
+                        <div class="set-title">
+                            <span class="set-number">${setNum}</span>
+                            Market Set ${setNum}
+                        </div>
                 `;
                 
                 // Orderbook section
                 setHTML += `
-                    <div class="orderbook-section">
-                        <div class="section-title">Orderbook</div>
+                    <div class="section-title">📈 Orderbook</div>
+                    <div class="orderbook-grid">
                 `;
                 
                 const markets = [
-                    {key: 'range', name: 'Range'},
-                    {key: 'lower', name: 'Lower Leg'},
-                    {key: 'higher', name: 'Higher Leg'}
+                    {key: 'range', name: 'Range', icon: '🎯'},
+                    {key: 'lower', name: 'Lower Leg', icon: '⬇️'},
+                    {key: 'higher', name: 'Higher Leg', icon: '⬆️'}
                 ];
                 
                 markets.forEach(market => {
@@ -215,35 +485,57 @@
                     
                     setHTML += `
                         <div class="market-card">
-                            <div class="market-name">${market.name}</div>
-                            <div class="ticker">${ticker}</div>
+                            <div class="market-header">
+                                <div class="market-name">${market.icon} ${market.name}</div>
+                                <div class="ticker">${ticker}</div>
+                            </div>
                     `;
                     
                     if (ob && ob.yes_bid !== undefined) {
                         setHTML += `
                             <div class="orderbook-data">
-                                YES Bid: ${String(ob.yes_bid || 0).padStart(3)} | YES Ask: ${String(ob.yes_ask || 0).padStart(3)} | Last: ${String(ob.last_price || 0).padStart(3)}<br>
-                                NO Bid:  ${String(ob.no_bid || 0).padStart(3)} | NO Ask:  ${String(ob.no_ask || 0).padStart(3)}
+                                <div class="orderbook-row">
+                                    <span class="orderbook-label">YES Bid:</span>
+                                    <span class="orderbook-value value-yes">${String(ob.yes_bid || 0).padStart(3)}</span>
+                                </div>
+                                <div class="orderbook-row">
+                                    <span class="orderbook-label">YES Ask:</span>
+                                    <span class="orderbook-value value-yes">${String(ob.yes_ask || 0).padStart(3)}</span>
+                                </div>
+                                <div class="orderbook-row">
+                                    <span class="orderbook-label">NO Bid:</span>
+                                    <span class="orderbook-value value-no">${String(ob.no_bid || 0).padStart(3)}</span>
+                                </div>
+                                <div class="orderbook-row">
+                                    <span class="orderbook-label">NO Ask:</span>
+                                    <span class="orderbook-value value-no">${String(ob.no_ask || 0).padStart(3)}</span>
+                                </div>
+                                <div class="orderbook-row">
+                                    <span class="orderbook-label">Last:</span>
+                                    <span class="orderbook-value value-last">${String(ob.last_price || 0).padStart(3)}</span>
+                                </div>
                             </div>
                         `;
                     } else {
-                        setHTML += '<div class="orderbook-data">No data</div>';
+                        setHTML += '<div class="orderbook-data" style="color: #6b7280;">No data available</div>';
                     }
                     
                     setHTML += '</div>';
                 });
                 
-                setHTML += '</div>'; // Close orderbook-section
+                setHTML += '</div>'; // Close orderbook-grid
+                setHTML += '<div class="section-divider"></div>';
                 
                 // Profit section
                 setHTML += `
-                    <div class="section-title">💰 Profit Opportunities</div>
-                    <div class="profit-grid">
+                    <div class="profit-section">
+                        <div class="section-title">💰 Profit Opportunities</div>
+                        <div class="profit-grid">
                 `;
                 
                 const profitNames = [
-                    {key: 'profit1', label: 'Profit 1 (Range YES limit)', color: '#4A90E2'},
-                    {key: 'profit2', label: 'Profit 2 (Range NO limit)', color: '#50C878'}
+                    {key: 'profit1', label: 'Profit 1', sublabel: 'Range YES limit', icon: '📊'},
+                    {key: 'profit2', label: 'Profit 2', sublabel: 'Range NO limit', icon: '💎'}
                 ];
                 
                 profitNames.forEach(profit => {
@@ -252,29 +544,19 @@
                     
                     setHTML += `
                         <div class="profit-card ${cardClass}">
-                            <div class="profit-label">${profit.label}</div>
-                            <div class="profit-value">${value.toFixed(2)}</div>
+                            <div class="profit-label">${profit.icon} ${profit.label}</div>
+                            <div class="profit-value">${value >= 0 ? '+' : ''}${value.toFixed(2)}</div>
+                            <div style="font-size: 0.75em; color: #6b7280; margin-top: 4px;">${profit.sublabel}</div>
                         </div>
                     `;
                 });
                 
                 setHTML += '</div>'; // Close profit-grid
+                setHTML += '</div>'; // Close profit-section
                 setHTML += '</div>'; // Close set-section
                 
                 setsContainer.innerHTML += setHTML;
             });
-            
-            // Update status
-            const statusElement = document.getElementById('status');
-            if (data.last_update) {
-                statusElement.textContent = '🟢 Connected';
-                statusElement.classList.remove('inactive');
-                statusElement.classList.add('active');
-            } else {
-                statusElement.textContent = '🔴 Disconnected';
-                statusElement.classList.remove('active');
-                statusElement.classList.add('inactive');
-            }
         }
         
         function fetchData() {
@@ -285,9 +567,9 @@
                 })
                 .catch(error => {
                     console.error('Error fetching data:', error);
-                    document.getElementById('status').textContent = '🔴 Error';
-                    document.getElementById('status').classList.remove('active');
-                    document.getElementById('status').classList.add('inactive');
+                    document.getElementById('status').innerHTML = 
+                        '<span class="status-indicator inactive"></span>Error';
+                    document.getElementById('status').className = 'status inactive';
                 });
         }
         
