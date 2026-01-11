@@ -1,0 +1,359 @@
+"""Main monitoring loop for smart market monitoring"""
+import asyncio
+import websockets
+import json
+import time
+import threading
+import aiohttp
+from config import WS_URL
+from auth import get_auth_headers
+from marketFinder import find_and_setup_markets
+from marketData import get_market_orderbook_async
+from profitCalculator import calculate_profits, log_profits_to_csv
+
+try:
+    from webUi import update_data, run_server
+    WEB_UI_AVAILABLE = True
+except ImportError:
+    WEB_UI_AVAILABLE = False
+    print("⚠️  webUi.py not available - web UI disabled")
+
+async def monitor_markets(market_sets_ref, csv_filename_ref, date_str_ref):
+    """Monitor markets with ability to update market_sets hourly
+    
+    Args:
+        market_sets_ref: List that will be updated with new markets
+        csv_filename_ref: List containing CSV filename (will be updated)
+        date_str_ref: List containing date string (will be updated)
+    """
+    print(f"\n🎯 Monitoring {len(market_sets_ref)} range sets ({len(market_sets_ref) * 3} total markets):")
+    for i, market_set in enumerate(market_sets_ref, 1):
+        print(f"   Set {i}: Range={market_set['range_ticker']}, Lower={market_set['lower_leg_ticker']}, Higher={market_set['higher_leg_ticker']}")
+    print("-" * 60)
+    
+    # Generate auth headers for WebSocket
+    headers = get_auth_headers(method="GET", path="/trade-api/ws/v2")
+    
+    last_market_refresh = time.time()
+    MARKET_REFRESH_INTERVAL = 300  # Refresh market selection every 5 minutes (300 seconds)
+    last_csv_write = time.time()
+    CSV_WRITE_INTERVAL = 1.0  # Write to CSV at most once per second
+    
+    # In-memory orderbook cache: {ticker: {'yes_bid': int, 'no_bid': int, 'yes_ask': int, 'no_ask': int, 'last_price': int}}
+    orderbook_cache = {}
+    
+    # Create aiohttp session once for reuse (performance optimization)
+    session = aiohttp.ClientSession()
+    
+    def update_orderbook_from_cache(ticker):
+        """Get orderbook dict from cache, deriving asks from bids"""
+        if ticker not in orderbook_cache:
+            return None
+        cached = orderbook_cache[ticker]
+        # Derive asks from bids: yes_ask = 100 - no_bid, no_ask = 100 - yes_bid
+        return {
+            'yes_bid': cached['yes_bid'],
+            'no_bid': cached['no_bid'],
+            'yes_ask': 100 - cached['no_bid'],
+            'no_ask': 100 - cached['yes_bid'],
+            'last_price': cached.get('last_price', 0)
+        }
+    
+    def recompute_and_update_profits(market_sets_list):
+        """Recompute profits for all market sets and update UI/CSV"""
+        nonlocal last_csv_write
+        
+        # Calculate profits for all sets
+        all_profits = []
+        all_sets_ui_data = []
+        
+        for i, market_set in enumerate(market_sets_list):
+            range_ob = update_orderbook_from_cache(market_set['range_ticker'])
+            lower_ob = update_orderbook_from_cache(market_set['lower_leg_ticker'])
+            higher_ob = update_orderbook_from_cache(market_set['higher_leg_ticker'])
+            
+            profits = calculate_profits(range_ob, lower_ob, higher_ob)
+            all_profits.append(profits)
+            
+            # Prepare UI data
+            all_sets_ui_data.append({
+                'orderbooks': {
+                    'range': range_ob,
+                    'lower': lower_ob,
+                    'higher': higher_ob
+                },
+                'profits': profits or {},
+                'tickers': {
+                    'range': market_set['range_ticker'],
+                    'lower': market_set['lower_leg_ticker'],
+                    'higher': market_set['higher_leg_ticker']
+                }
+            })
+        
+        # Update web UI
+        if WEB_UI_AVAILABLE:
+            try:
+                update_data(all_sets_ui_data)
+            except:
+                pass  # Silently fail if UI not ready
+        
+        # Log to CSV (throttled to once per second)
+        current_time = time.time()
+        if csv_filename_ref[0] and (current_time - last_csv_write) >= CSV_WRITE_INTERVAL:
+            last_csv_write = current_time
+            log_profits_to_csv(csv_filename_ref[0], all_profits)
+    
+    async def initialize_orderbooks(tickers_list):
+        """Initialize orderbook cache with initial REST calls"""
+        print("📥 Initializing orderbook cache from REST API...")
+        tasks = [get_market_orderbook_async(session, ticker) for ticker in tickers_list]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for ticker, result in zip(tickers_list, results):
+            if isinstance(result, Exception) or result is None:
+                # Initialize with defaults
+                orderbook_cache[ticker] = {
+                    'yes_bid': 0,
+                    'no_bid': 0,
+                    'last_price': 0
+                }
+            else:
+                # Store bids in cache (asks will be derived)
+                orderbook_cache[ticker] = {
+                    'yes_bid': result.get('yes_bid', 0) or 0,
+                    'no_bid': result.get('no_bid', 0) or 0,
+                    'last_price': result.get('last_price', 0) or 0
+                }
+        print(f"✅ Initialized {len([r for r in results if not isinstance(r, Exception) and r is not None])} orderbooks")
+    
+    def process_orderbook_delta(data):
+        """Process an orderbook_delta message and update cache"""
+        try:
+            # Try different possible message formats
+            ticker = data.get('ticker') or data.get('market_ticker') or data.get('event_ticker')
+            if not ticker:
+                return False
+            
+            # Get bids and asks from delta
+            # Format could be: data['bids'], data['yes_bids'], data['orderbook']['bids'], etc.
+            yes_bid = None
+            no_bid = None
+            
+            # Try to extract best bids from various possible formats
+            if 'yes_bid' in data:
+                yes_bid = data['yes_bid']
+            elif 'bids' in data and isinstance(data['bids'], list) and len(data['bids']) > 0:
+                # Assume first bid in list is best bid
+                yes_bid = data['bids'][0].get('price') if isinstance(data['bids'][0], dict) else data['bids'][0]
+            elif 'orderbook' in data:
+                ob = data['orderbook']
+                if 'yes_bid' in ob:
+                    yes_bid = ob['yes_bid']
+                elif 'bids' in ob and isinstance(ob['bids'], list) and len(ob['bids']) > 0:
+                    yes_bid = ob['bids'][0].get('price') if isinstance(ob['bids'][0], dict) else ob['bids'][0]
+            
+            if 'no_bid' in data:
+                no_bid = data['no_bid']
+            elif 'no_bids' in data and isinstance(data['no_bids'], list) and len(data['no_bids']) > 0:
+                no_bid = data['no_bids'][0].get('price') if isinstance(data['no_bids'][0], dict) else data['no_bids'][0]
+            elif 'orderbook' in data:
+                ob = data['orderbook']
+                if 'no_bid' in ob:
+                    no_bid = ob['no_bid']
+                elif 'no_bids' in ob and isinstance(ob['no_bids'], list) and len(ob['no_bids']) > 0:
+                    no_bid = ob['no_bids'][0].get('price') if isinstance(ob['no_bids'][0], dict) else ob['no_bids'][0]
+            
+            # Update cache if we have new bid values
+            if ticker in orderbook_cache:
+                if yes_bid is not None:
+                    orderbook_cache[ticker]['yes_bid'] = yes_bid
+                if no_bid is not None:
+                    orderbook_cache[ticker]['no_bid'] = no_bid
+                if 'last_price' in data:
+                    orderbook_cache[ticker]['last_price'] = data['last_price']
+                return True
+            else:
+                # Initialize if not in cache yet
+                orderbook_cache[ticker] = {
+                    'yes_bid': yes_bid if yes_bid is not None else 0,
+                    'no_bid': no_bid if no_bid is not None else 0,
+                    'last_price': data.get('last_price', 0) or 0
+                }
+                return True
+        except Exception as e:
+            # Silently handle parsing errors
+            return False
+    
+    try:
+        async with websockets.connect(WS_URL, extra_headers=headers) as websocket:
+            print("✅ Connected to WebSocket!")
+            
+            # Subscribe to orderbook_delta for all tickers
+            all_tickers_list = []
+            for market_set in market_sets_ref:
+                all_tickers_list.extend([
+                    market_set['range_ticker'],
+                    market_set['lower_leg_ticker'],
+                    market_set['higher_leg_ticker']
+                ])
+            all_tickers_list = list(set(all_tickers_list))  # Remove duplicates
+            
+            sub_msg = {
+                "id": 1,
+                "cmd": "subscribe",
+                "params": {
+                    "channels": ["orderbook_delta"],
+                    "market_tickers": all_tickers_list
+                }
+            }
+            await websocket.send(json.dumps(sub_msg))
+            print(f"📤 Subscribed to orderbook_delta channel for {len(all_tickers_list)} markets")
+            
+            # Initialize orderbook cache with initial REST calls
+            await initialize_orderbooks(all_tickers_list)
+            
+            # Initial profit calculation and UI update
+            recompute_and_update_profits(list(market_sets_ref))
+            
+            print("📡 Listening for orderbook deltas (real-time updates)...")
+            print("   (Press Ctrl+C to stop)")
+            print("-" * 60)
+            
+            while True:
+                # Check if we need to refresh markets (every 5 minutes)
+                current_time = time.time()
+                if current_time - last_market_refresh >= MARKET_REFRESH_INTERVAL:
+                    last_market_refresh = current_time
+                    print(f"\n⏰ 5 minutes elapsed - Refreshing market selection...")
+                    new_market_sets, new_csv_filename, new_date_str = await find_and_setup_markets(init_csv=False)
+                    if new_market_sets:
+                        # Update the references (but keep same CSV filename if same hour)
+                        market_sets_ref.clear()
+                        market_sets_ref.extend(new_market_sets)
+                        # Only update CSV filename if hour changed, otherwise keep same file
+                        if new_date_str != date_str_ref[0]:
+                            csv_filename_ref[0] = new_csv_filename
+                            date_str_ref[0] = new_date_str
+                        else:
+                            # Same hour, keep using existing CSV file
+                            print(f"   ℹ️  Keeping existing CSV file: {csv_filename_ref[0]}")
+                        
+                        # Re-subscribe to WebSocket for new markets
+                        new_tickers_list = []
+                        for market_set in market_sets_ref:
+                            new_tickers_list.extend([
+                                market_set['range_ticker'],
+                                market_set['lower_leg_ticker'],
+                                market_set['higher_leg_ticker']
+                            ])
+                        new_tickers_list = list(set(new_tickers_list))
+                        
+                        # Initialize orderbooks for new markets
+                        await initialize_orderbooks(new_tickers_list)
+                        
+                        sub_msg = {
+                            "id": 2,
+                            "cmd": "subscribe",
+                            "params": {
+                                "channels": ["orderbook_delta"],
+                                "market_tickers": new_tickers_list
+                            }
+                        }
+                        await websocket.send(json.dumps(sub_msg))
+                        print(f"📤 Re-subscribed to {len(new_tickers_list)} markets")
+                        
+                        # Recompute profits with new markets
+                        recompute_and_update_profits(list(market_sets_ref))
+                
+                # Check for WebSocket messages (no timeout - wait for messages)
+                try:
+                    message = await websocket.recv()
+                except Exception:
+                    continue
+                
+                # Handle ping frames
+                if isinstance(message, bytes):
+                    continue
+                
+                try:
+                    data = json.loads(message)
+                    if not isinstance(data, dict):
+                        continue
+                    
+                    msg_type = data.get("type") or data.get("cmd") or "unknown"
+                    
+                    # Process orderbook deltas - this is the key optimization!
+                    if msg_type == "orderbook_delta":
+                        # Update cache from delta
+                        updated = process_orderbook_delta(data)
+                        
+                        if updated:
+                            # Find which market sets are affected by this ticker
+                            ticker = data.get('ticker') or data.get('market_ticker') or data.get('event_ticker')
+                            if ticker:
+                                # Recompute profits for all sets (quick operation)
+                                recompute_and_update_profits(list(market_sets_ref))
+                    
+                    elif msg_type == "error":
+                        error_msg = data.get('msg', {})
+                        if isinstance(error_msg, dict):
+                            error_code = error_msg.get('code', 'unknown')
+                            if error_code != 8:  # Skip "Unknown channel" errors
+                                print(f"❌ Error: {error_msg.get('msg', error_msg)}")
+                    
+                except Exception:
+                    continue
+    except websockets.exceptions.ConnectionClosed:
+        print("❌ Connection lost. Attempting to reconnect...")
+        await session.close()
+        await asyncio.sleep(5)
+        await monitor_markets(market_sets_ref, csv_filename_ref, date_str_ref)
+    except KeyboardInterrupt:
+        print("\n\n👋 Stopped monitoring.")
+        await session.close()
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        await session.close()
+        import traceback
+        traceback.print_exc()
+    finally:
+        # Close the aiohttp session when done
+        if not session.closed:
+            await session.close()
+
+async def main():
+    """Main function"""
+    print("="*60)
+    print("🎯 Smart Market Monitor")
+    print("="*60)
+    
+    # Initialize web UI if available
+    if WEB_UI_AVAILABLE:
+        try:
+            # Start web server in background thread (use 5001 to avoid macOS AirPlay conflict on 5000)
+            ui_thread = threading.Thread(target=run_server, daemon=True, args=('127.0.0.1', 5001, False))
+            ui_thread.start()
+            print("🌐 Web UI started at http://127.0.0.1:5001")
+            time.sleep(1)  # Give server a moment to start
+        except Exception as e:
+            print(f"⚠️  Could not start web UI: {e}")
+    
+    # Find initial markets
+    market_sets, csv_filename, date_str = await find_and_setup_markets()
+    if not market_sets:
+        print("❌ Failed to initialize markets")
+        return
+    
+    # Use lists/dicts as references so monitor_markets can update them
+    market_sets_ref = market_sets  # Already a list, will be updated in place
+    csv_filename_ref = [csv_filename]  # Wrap in list for reference update
+    date_str_ref = [date_str]  # Wrap in list for reference update
+    
+    # Start monitoring (will refresh markets every 5 minutes)
+    await monitor_markets(market_sets_ref, csv_filename_ref, date_str_ref)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n👋 Exiting...")

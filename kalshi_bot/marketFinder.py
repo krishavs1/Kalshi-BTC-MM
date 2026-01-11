@@ -218,7 +218,7 @@ async def find_and_setup_markets(init_csv=True):
     Args:
         init_csv: If True, initialize CSV file. If False, skip CSV initialization (for refreshes)
     """
-    from profit_calculator import init_profit_csv
+    from profitCalculator import init_profit_csv
     
     # Get current EST hour
     date_str, est_hour, _, _, _ = get_current_est_hour()
