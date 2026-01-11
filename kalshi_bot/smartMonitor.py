@@ -41,6 +41,7 @@ async def monitor_markets(market_sets_ref, csv_filename_ref, date_str_ref):
     
     # In-memory orderbook cache: {ticker: {'yes_bid': int, 'no_bid': int, 'yes_ask': int, 'no_ask': int, 'last_price': int}}
     orderbook_cache = {}
+    logged_samples = {}  # Track message counts: {"orderbook_snapshot_count": 5, "orderbook_delta_count": 3}
     
     # Create aiohttp session once for reuse (performance optimization)
     session = aiohttp.ClientSession()
@@ -127,50 +128,46 @@ async def monitor_markets(market_sets_ref, csv_filename_ref, date_str_ref):
         print(f"✅ Initialized {len([r for r in results if not isinstance(r, Exception) and r is not None])} orderbooks")
     
     def process_orderbook_delta(data):
-        """Process an orderbook_delta message and update cache"""
+        """Process an orderbook_delta or orderbook_snapshot message and update cache
+        Kalshi format: {'market_ticker': '...', 'yes': [[price, size], ...], 'no': [[price, size], ...]}
+        Arrays are sorted by price (lowest to highest). First element = best bid, last element = best ask.
+        """
         try:
-            # Try different possible message formats
-            ticker = data.get('ticker') or data.get('market_ticker') or data.get('event_ticker')
+            # Extract ticker
+            ticker = data.get('market_ticker') or data.get('event_ticker') or data.get('ticker')
             if not ticker:
                 return False
             
-            # Get bids and asks from delta
-            # Format could be: data['bids'], data['yes_bids'], data['orderbook']['bids'], etc.
+            # Extract best bids from yes/no arrays (first element = best bid)
             yes_bid = None
             no_bid = None
             
-            # Try to extract best bids from various possible formats
-            if 'yes_bid' in data:
-                yes_bid = data['yes_bid']
-            elif 'bids' in data and isinstance(data['bids'], list) and len(data['bids']) > 0:
-                # Assume first bid in list is best bid
-                yes_bid = data['bids'][0].get('price') if isinstance(data['bids'][0], dict) else data['bids'][0]
-            elif 'orderbook' in data:
-                ob = data['orderbook']
-                if 'yes_bid' in ob:
-                    yes_bid = ob['yes_bid']
-                elif 'bids' in ob and isinstance(ob['bids'], list) and len(ob['bids']) > 0:
-                    yes_bid = ob['bids'][0].get('price') if isinstance(ob['bids'][0], dict) else ob['bids'][0]
+            # Parse YES array: first element is best YES bid
+            if 'yes' in data and isinstance(data['yes'], list) and len(data['yes']) > 0:
+                yes_entry = data['yes'][0]
+                if isinstance(yes_entry, list) and len(yes_entry) > 0:
+                    yes_bid = int(yes_entry[0])
             
-            if 'no_bid' in data:
-                no_bid = data['no_bid']
-            elif 'no_bids' in data and isinstance(data['no_bids'], list) and len(data['no_bids']) > 0:
-                no_bid = data['no_bids'][0].get('price') if isinstance(data['no_bids'][0], dict) else data['no_bids'][0]
-            elif 'orderbook' in data:
-                ob = data['orderbook']
-                if 'no_bid' in ob:
-                    no_bid = ob['no_bid']
-                elif 'no_bids' in ob and isinstance(ob['no_bids'], list) and len(ob['no_bids']) > 0:
-                    no_bid = ob['no_bids'][0].get('price') if isinstance(ob['no_bids'][0], dict) else ob['no_bids'][0]
+            # Parse NO array: first element is best NO bid
+            if 'no' in data and isinstance(data['no'], list) and len(data['no']) > 0:
+                no_entry = data['no'][0]
+                if isinstance(no_entry, list) and len(no_entry) > 0:
+                    no_bid = int(no_entry[0])
             
-            # Update cache if we have new bid values
+            # Fallback: try direct yes_bid/no_bid fields (for REST API format)
+            if yes_bid is None and 'yes_bid' in data:
+                yes_bid = int(data['yes_bid'])
+            if no_bid is None and 'no_bid' in data:
+                no_bid = int(data['no_bid'])
+            
+            # Update cache (only update if we have new data)
             if ticker in orderbook_cache:
                 if yes_bid is not None:
                     orderbook_cache[ticker]['yes_bid'] = yes_bid
                 if no_bid is not None:
                     orderbook_cache[ticker]['no_bid'] = no_bid
                 if 'last_price' in data:
-                    orderbook_cache[ticker]['last_price'] = data['last_price']
+                    orderbook_cache[ticker]['last_price'] = data.get('last_price', 0) or 0
                 return True
             else:
                 # Initialize if not in cache yet
@@ -220,8 +217,9 @@ async def monitor_markets(market_sets_ref, csv_filename_ref, date_str_ref):
             print("-" * 60)
             
             while True:
-                # Check if we need to refresh markets (every 5 minutes)
                 current_time = time.time()
+                
+                # Check if we need to refresh markets (every 5 minutes)
                 if current_time - last_market_refresh >= MARKET_REFRESH_INTERVAL:
                     last_market_refresh = current_time
                     print(f"\n⏰ 5 minutes elapsed - Refreshing market selection...")
@@ -265,7 +263,7 @@ async def monitor_markets(market_sets_ref, csv_filename_ref, date_str_ref):
                         # Recompute profits with new markets
                         recompute_and_update_profits(list(market_sets_ref))
                 
-                # Check for WebSocket messages (no timeout - wait for messages)
+                # Check for WebSocket messages (blocking - wait for messages)
                 try:
                     message = await websocket.recv()
                 except Exception:
@@ -280,19 +278,34 @@ async def monitor_markets(market_sets_ref, csv_filename_ref, date_str_ref):
                     if not isinstance(data, dict):
                         continue
                     
-                    msg_type = data.get("type") or data.get("cmd") or "unknown"
+                    # Kalshi WebSocket messages use 'type' field for message type
+                    msg_type = data.get("type")
                     
-                    # Process orderbook deltas - this is the key optimization!
-                    if msg_type == "orderbook_delta":
-                        # Update cache from delta
-                        updated = process_orderbook_delta(data)
+                    # Log sample messages to understand structure (log first 10 of each type)
+                    if msg_type in ["orderbook_delta", "orderbook_snapshot"]:
+                        count_key = f"{msg_type}_count"
+                        if count_key not in logged_samples:
+                            logged_samples[count_key] = 0
+                        logged_samples[count_key] += 1
+                        
+                        if logged_samples[count_key] <= 10:  # Log first 10 messages of each type
+                            print(f"\n{'='*60}")
+                            print(f"📥 {msg_type} message #{logged_samples[count_key]} (full structure):")
+                            print(f"{'='*60}")
+                            print(json.dumps(data, indent=2))
+                            print(f"{'='*60}\n")
+                    
+                    # Kalshi messages have nested structure: {type: "...", msg: {...actual data...}}
+                    msg_data = data.get("msg", data)  # Fallback to data itself if no msg wrapper
+                    
+                    # Process orderbook snapshots and deltas
+                    if msg_type in ["orderbook_delta", "orderbook_snapshot"]:
+                        # Update cache from snapshot/delta (they have the same structure)
+                        updated = process_orderbook_delta(msg_data)
                         
                         if updated:
-                            # Find which market sets are affected by this ticker
-                            ticker = data.get('ticker') or data.get('market_ticker') or data.get('event_ticker')
-                            if ticker:
-                                # Recompute profits for all sets (quick operation)
-                                recompute_and_update_profits(list(market_sets_ref))
+                            # Recompute profits for all sets (quick operation)
+                            recompute_and_update_profits(list(market_sets_ref))
                     
                     elif msg_type == "error":
                         error_msg = data.get('msg', {})
@@ -300,8 +313,12 @@ async def monitor_markets(market_sets_ref, csv_filename_ref, date_str_ref):
                             error_code = error_msg.get('code', 'unknown')
                             if error_code != 8:  # Skip "Unknown channel" errors
                                 print(f"❌ Error: {error_msg.get('msg', error_msg)}")
+                    elif msg_type and msg_type not in ["subscription_confirmation", "heartbeat"]:
+                        # Log unexpected message types (but only once per type to avoid spam)
+                        pass  # Silent for now, can enable logging if needed
                     
-                except Exception:
+                except Exception as e:
+                    # Silently continue on parse errors
                     continue
     except websockets.exceptions.ConnectionClosed:
         print("❌ Connection lost. Attempting to reconnect...")
