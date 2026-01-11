@@ -94,12 +94,6 @@
             border: 1px solid rgba(255, 255, 255, 0.1);
             backdrop-filter: blur(10px);
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
-            transition: box-shadow 0.2s ease, border-color 0.2s ease;
-        }
-        
-        .set-section:hover {
-            box-shadow: 0 12px 40px rgba(102, 126, 234, 0.3);
-            border-color: rgba(102, 126, 234, 0.3);
         }
         
         .set-title {
@@ -152,12 +146,6 @@
             padding: 16px;
             border-left: 4px solid #667eea;
             backdrop-filter: blur(5px);
-            transition: background-color 0.2s ease, border-left-color 0.2s ease;
-        }
-        
-        .market-card:hover {
-            background: rgba(102, 126, 234, 0.15);
-            border-left-color: #f093fb;
         }
         
         .market-header {
@@ -239,28 +227,14 @@
             backdrop-filter: blur(5px);
             position: relative;
             overflow: hidden;
-            transition: box-shadow 0.2s ease, transform 0.2s ease;
-        }
-        
-        .profit-card:hover {
-            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
-            transform: translateY(-2px);
         }
         
         .profit-card.positive {
             border-left-color: #10b981;
         }
         
-        .profit-card.positive:hover {
-            box-shadow: 0 8px 20px rgba(16, 185, 129, 0.3);
-        }
-        
         .profit-card.negative {
             border-left-color: #ef4444;
-        }
-        
-        .profit-card.negative:hover {
-            box-shadow: 0 8px 20px rgba(239, 68, 68, 0.3);
         }
         
         .profit-card.neutral {
@@ -280,11 +254,6 @@
             font-size: 2em;
             font-weight: 700;
             font-family: 'Courier New', monospace;
-            transition: transform 0.2s ease;
-        }
-        
-        .profit-card:hover .profit-value {
-            transform: scale(1.03);
         }
         
         .profit-card.positive .profit-value {

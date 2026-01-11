@@ -144,3 +144,4 @@ def check_market_trades(ticker):
     except Exception as e:
         pass  # Silently handle errors
 
+

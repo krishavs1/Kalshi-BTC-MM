@@ -69,3 +69,4 @@ def log_profits_to_csv(csv_filename, all_profits):
     except Exception as e:
         print(f"⚠️  Error writing to CSV: {e}")
 
+
