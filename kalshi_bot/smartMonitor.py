@@ -355,11 +355,15 @@ async def main():
         except Exception as e:
             print(f"⚠️  Could not start web UI: {e}")
     
-    # Find initial markets
-    market_sets, csv_filename, date_str = await find_and_setup_markets()
-    if not market_sets:
-        print("❌ Failed to initialize markets")
-        return
+    # Find initial markets (retry until markets are found)
+    while True:
+        market_sets, csv_filename, date_str = await find_and_setup_markets()
+        if market_sets:
+            break  # Found markets, exit retry loop
+        
+        # No markets found, wait and retry at next hour
+        print(f"⏳ No markets found. Waiting to retry at next hour...")
+        await asyncio.sleep(60)  # Wait 1 minute before checking again
     
     # Use lists/dicts as references so monitor_markets can update them
     market_sets_ref = market_sets  # Already a list, will be updated in place
