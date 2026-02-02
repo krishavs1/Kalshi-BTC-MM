@@ -77,6 +77,36 @@
             background: rgba(255, 107, 107, 0.1);
         }
         
+        .ready-banner {
+            padding: 12px 20px;
+            background: linear-gradient(135deg, rgba(80, 200, 120, 0.25) 0%, rgba(34, 139, 34, 0.2) 100%);
+            border: 2px solid rgba(80, 200, 120, 0.6);
+            border-radius: 10px;
+            color: #50c878;
+            font-weight: 600;
+            font-size: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 20px;
+            animation: readyPulse 2s ease-in-out infinite;
+            box-shadow: 0 0 20px rgba(80, 200, 120, 0.2);
+        }
+        
+        .ready-banner.hidden {
+            display: none;
+        }
+        
+        @keyframes readyPulse {
+            0%, 100% { box-shadow: 0 0 20px rgba(80, 200, 120, 0.2); }
+            50% { box-shadow: 0 0 30px rgba(80, 200, 120, 0.4); }
+        }
+        
+        .set-section.ready-for-trading {
+            border-color: rgba(80, 200, 120, 0.5);
+            box-shadow: 0 0 20px rgba(80, 200, 120, 0.15);
+        }
+        
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.5; }
@@ -252,6 +282,11 @@
         <div class="status inactive" id="status">Waiting...</div>
     </div>
     
+    <div class="ready-banner hidden" id="readyBanner">
+        <span>🚀</span>
+        <span>READY FOR TRADING — Profit &gt; 5¢</span>
+    </div>
+    
     <div id="setsContainer">
         <div class="loading">Loading market data...</div>
     </div>
@@ -302,14 +337,18 @@
                 
                 let allHTML = '<div class="sets-container">';
                 
+                let anyReady = false;
                 sets.forEach((setData, index) => {
                     const orderbooks = setData.orderbooks || {};
                     const profits = setData.profits || {};
                     const tickers = setData.tickers || {};
+                    const ready = setData.ready_for_trading || false;
+                    if (ready) anyReady = true;
                     
+                    const setClass = ready ? 'set-section ready-for-trading' : 'set-section';
                     let setHTML = `
-                        <div class="set-section">
-                            <div class="set-title">Set ${index + 1}</div>
+                        <div class="${setClass}">
+                            <div class="set-title">Set ${index + 1}${ready ? ' 🚀' : ''}</div>
                     `;
                     
                     // Market values
@@ -372,6 +411,12 @@
                 
                 allHTML += '</div>';
                 setsContainer.innerHTML = allHTML;
+                
+                // Show/hide ready-for-trading banner
+                const readyBanner = document.getElementById('readyBanner');
+                if (readyBanner) {
+                    readyBanner.classList.toggle('hidden', !anyReady);
+                }
                 
             } catch (error) {
                 console.error('Error in updateDisplay:', error);

@@ -5,7 +5,7 @@ import json
 import time
 import threading
 import aiohttp
-from config import WS_URL
+from config import WS_URL, PROFIT_THRESHOLD_CENTS
 from auth import get_auth_headers
 from marketFinder import find_and_setup_markets
 from marketData import get_market_orderbook_async
@@ -60,6 +60,9 @@ async def monitor_markets(market_sets_ref, csv_filename_ref, date_str_ref):
             'last_price': cached.get('last_price', 0)
         }
     
+    # Track whether we've logged "ready for trading" to avoid spam (reset when below threshold)
+    ready_for_trading_logged = [False]  # Use list for nonlocal-like behavior in nested scope
+    
     def recompute_and_update_profits(market_sets_list):
         """Recompute profits for all market sets and update UI/CSV"""
         nonlocal last_csv_write
@@ -67,6 +70,7 @@ async def monitor_markets(market_sets_ref, csv_filename_ref, date_str_ref):
         # Calculate profits for all sets
         all_profits = []
         all_sets_ui_data = []
+        any_ready = False
         
         for i, market_set in enumerate(market_sets_list):
             range_ob = update_orderbook_from_cache(market_set['range_ticker'])
@@ -75,6 +79,14 @@ async def monitor_markets(market_sets_ref, csv_filename_ref, date_str_ref):
             
             profits = calculate_profits(range_ob, lower_ob, higher_ob)
             all_profits.append(profits)
+            
+            # Check if this set has profit > threshold (prepare for trading)
+            ready = False
+            if profits:
+                p1, p2 = profits.get('profit1', 0), profits.get('profit2', 0)
+                ready = p1 > PROFIT_THRESHOLD_CENTS or p2 > PROFIT_THRESHOLD_CENTS
+                if ready:
+                    any_ready = True
             
             # Prepare UI data
             all_sets_ui_data.append({
@@ -88,8 +100,17 @@ async def monitor_markets(market_sets_ref, csv_filename_ref, date_str_ref):
                     'range': market_set['range_ticker'],
                     'lower': market_set['lower_leg_ticker'],
                     'higher': market_set['higher_leg_ticker']
-                }
+                },
+                'ready_for_trading': ready
             })
+        
+        # Log when profit > threshold (once per crossing)
+        if any_ready:
+            if not ready_for_trading_logged[0]:
+                ready_for_trading_logged[0] = True
+                print(f"\n🚀 PROFIT > {PROFIT_THRESHOLD_CENTS}¢ — READY FOR TRADING\n")
+        else:
+            ready_for_trading_logged[0] = False
         
         # Update web UI
         if WEB_UI_AVAILABLE:

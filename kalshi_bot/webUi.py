@@ -10,7 +10,7 @@ app.config['TEMPLATES_AUTO_RELOAD'] = True
 # Shared data structure (thread-safe with locks)
 data_lock = threading.Lock()
 latest_data = {
-    'sets': [],  # List of dicts, each with 'orderbooks', 'profits', 'tickers'
+    'sets': [],  # List of dicts, each with 'orderbooks', 'profits', 'tickers', 'ready_for_trading'
     'last_update': None
 }
 
