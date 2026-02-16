@@ -19,7 +19,7 @@ async def get_market_orderbook_async(session, ticker):
                     'no_ask': market_data.get('no_ask', 100) or 100,
                     'last_price': market_data.get('last_price', 0)
                 }
-    except:
+    except Exception:
         pass
     return None
 
@@ -39,8 +39,6 @@ def get_market_orderbook(ticker):
                 'no_ask': market_data.get('no_ask', 100) or 100,
                 'last_price': market_data.get('last_price', 0)
             }
-    except:
+    except Exception:
         pass
     return None
-
-

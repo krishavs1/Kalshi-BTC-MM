@@ -38,6 +38,8 @@ async def monitor_markets(market_sets_ref, csv_filename_ref, date_str_ref):
     MARKET_REFRESH_INTERVAL = 300  # Refresh market selection every 5 minutes (300 seconds)
     last_csv_write = time.time()
     CSV_WRITE_INTERVAL = 1.0  # Write to CSV at most once per second
+    REST_POLL_INTERVAL = 30  # Poll REST when no WebSocket updates for 30 seconds
+    last_ws_update_ref = [time.time()]
     
     # In-memory orderbook cache: {ticker: {'yes_bid': int, 'no_bid': int, 'yes_ask': int, 'no_ask': int, 'last_price': int}}
     orderbook_cache = {}
@@ -116,7 +118,7 @@ async def monitor_markets(market_sets_ref, csv_filename_ref, date_str_ref):
         if WEB_UI_AVAILABLE:
             try:
                 update_data(all_sets_ui_data)
-            except:
+            except Exception:
                 pass  # Silently fail if UI not ready
         
         # Log to CSV (throttled to once per second)
@@ -284,9 +286,27 @@ async def monitor_markets(market_sets_ref, csv_filename_ref, date_str_ref):
                         # Recompute profits with new markets
                         recompute_and_update_profits(list(market_sets_ref))
                 
-                # Check for WebSocket messages (blocking - wait for messages)
+                # Check for WebSocket messages (with timeout for periodic REST refresh)
                 try:
-                    message = await websocket.recv()
+                    message = await asyncio.wait_for(
+                        websocket.recv(),
+                        timeout=REST_POLL_INTERVAL
+                    )
+                except asyncio.TimeoutError:
+                    # No WebSocket updates for 30s - refresh orderbooks via REST to keep UI alive
+                    print("   ↻ Refreshing orderbooks via REST (no WS updates)")
+                    all_tickers = []
+                    for ms in market_sets_ref:
+                        all_tickers.extend([
+                            ms['range_ticker'],
+                            ms['lower_leg_ticker'],
+                            ms['higher_leg_ticker']
+                        ])
+                    all_tickers = list(set(all_tickers))
+                    await initialize_orderbooks(all_tickers)
+                    recompute_and_update_profits(list(market_sets_ref))
+                    last_ws_update_ref[0] = time.time()
+                    continue
                 except Exception:
                     continue
                 
@@ -325,6 +345,7 @@ async def monitor_markets(market_sets_ref, csv_filename_ref, date_str_ref):
                         updated = process_orderbook_delta(msg_data)
                         
                         if updated:
+                            last_ws_update_ref[0] = time.time()
                             # Recompute profits for all sets (quick operation)
                             recompute_and_update_profits(list(market_sets_ref))
                     
