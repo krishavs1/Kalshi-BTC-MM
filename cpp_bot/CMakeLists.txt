@@ -39,6 +39,7 @@ add_executable(kalshi_bot_cpp
   src/auth.cpp
   src/http_client.cpp
   src/market_finder.cpp
+  src/execution_engine.cpp
   src/profit_calculator.cpp
   src/smart_monitor.cpp
 )

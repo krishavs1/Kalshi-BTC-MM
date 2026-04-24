@@ -6,6 +6,7 @@
 #include <set>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 #include <websocketpp/client.hpp>
@@ -13,6 +14,7 @@
 
 #include "auth.hpp"
 #include "config.hpp"
+#include "execution_engine.hpp"
 #include "http_client.hpp"
 #include "market_finder.hpp"
 #include "profit_calculator.hpp"
@@ -56,6 +58,25 @@ void run_monitor(const std::string& key_id, const std::string& private_key_path)
 
   std::unordered_map<std::string, Orderbook> cache;
   std::mutex cache_mu;
+  const auto now_ms = []() -> int64_t {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+  };
+  const auto now_us = []() -> int64_t {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+  };
+
+  ExecutionEngine execution(RiskConfig{
+      config::MAKER_FEE_BPS,
+      config::TAKER_FEE_BPS,
+      config::MIN_NET_EDGE_CENTS,
+      config::MAX_OPEN_POSITIONS,
+      config::ENABLE_PAPER_EXECUTION,
+  });
+  int64_t last_csv_ms = now_ms();
 
   auto refresh_cache = [&]() {
     std::set<std::string> tickers;
@@ -73,9 +94,11 @@ void run_monitor(const std::string& key_id, const std::string& private_key_path)
   auto recompute = [&]() {
     std::vector<ProfitPair> profits;
     bool ready = false;
+    std::vector<std::string> set_ids;
     {
       std::lock_guard<std::mutex> lock(cache_mu);
-      for (const auto& s : market_sets) {
+      for (size_t i = 0; i < market_sets.size(); ++i) {
+        const auto& s = market_sets[i];
         auto r = cache.find(s.range_ticker);
         auto l = cache.find(s.lower_leg_ticker);
         auto h = cache.find(s.higher_leg_ticker);
@@ -87,13 +110,24 @@ void run_monitor(const std::string& key_id, const std::string& private_key_path)
             (p.profit1 > config::PROFIT_THRESHOLD_CENTS || p.profit2 > config::PROFIT_THRESHOLD_CENTS)) {
           ready = true;
         }
+        set_ids.push_back("set_" + std::to_string(i + 1));
         profits.push_back(p);
       }
     }
+
+    const int64_t decision_ts_us = now_us();
+    for (size_t i = 0; i < profits.size(); ++i) {
+      execution.evaluate_set(set_ids[i], profits[i], decision_ts_us);
+    }
+
     if (ready) {
       std::cout << "PROFIT > " << config::PROFIT_THRESHOLD_CENTS << "c - READY FOR TRADING\n";
     }
-    log_profits_to_csv(csv_filename, profits);
+    const int64_t current_ms = now_ms();
+    if ((current_ms - last_csv_ms) >= config::CSV_WRITE_MS) {
+      log_profits_to_csv(csv_filename, profits);
+      last_csv_ms = current_ms;
+    }
   };
 
   refresh_cache();

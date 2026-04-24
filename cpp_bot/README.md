@@ -7,7 +7,11 @@ This folder contains the standalone C++ Kalshi BTC market monitor.
 - RSA-PSS request signing for Kalshi headers
 - REST market discovery (range + over-leg matching)
 - WebSocket orderbook delta subscription
-- Profit computation and CSV logging
+- Synthetic arbitrage signal construction from 3-leg combinations
+- Deterministic execution pipeline (signal -> risk gate -> state machine decision)
+- Fee-aware risk controls (maker/taker fee deduction + max-open-position guard)
+- Paper execution logic with order lifecycle state transitions
+- Profit computation and throttled CSV logging
 - Periodic market refresh and REST fallback polling
 
 ## Prerequisites
@@ -36,3 +40,4 @@ export KALSHI_PRIVATE_KEY_PATH="./kalshi-key.pem"
 ## Notes
 
 - Dependencies `nlohmann_json`, `websocketpp`, and `asio` are fetched by CMake.
+- Execution is currently paper-mode only (`ENABLE_PAPER_EXECUTION` in `src/config.hpp`).
