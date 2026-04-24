@@ -8,7 +8,7 @@ __pycache__/
 dist/
 build/
 
-# Private keys and secrets (NEVER commit these!)
+# Private keys and secrets
 *.pem
 kalshi-key.pem
 kalshi-public.pem
