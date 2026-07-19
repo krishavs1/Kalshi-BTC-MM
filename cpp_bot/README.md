@@ -2,6 +2,20 @@
 
 This folder contains the standalone C++ Kalshi BTC market monitor and live execution engine.
 
+## Latency model
+
+- **Local hot path** (`ws_recv → decide`, and `ws_recv → submit kickoff`) is optimized for **microseconds**.
+- **Exchange order RTT** over Kalshi HTTPS is still **milliseconds** (TLS + RSA-PSS auth + REST). Kalshi does not expose a co-located µs matching API to retail clients.
+
+What we did for the local path:
+- Cached RSA key in memory (`AuthSigner`) — no PEM reload per request
+- Atomic orderbook slots (`HotBook`) — no mutex on book reads
+- Recompute only sets touched by a delta
+- HTTP keep-alive + TCP_NODELAY + connection warm-up
+- Batch 3-leg create (one RTT / one signature when batch works)
+- Decision lock released before network I/O
+- Live `[latency]` p50/p90/p99 stats for `ws_to_decide` and `ws_to_submit_kick`
+
 ## Implemented
 
 - RSA-PSS request signing for Kalshi headers
@@ -11,10 +25,8 @@ This folder contains the standalone C++ Kalshi BTC market monitor and live execu
 - Deterministic execution pipeline (signal -> risk gate -> state machine decision)
 - Live Kalshi V2 order submit / amend / cancel (`/portfolio/events/orders`)
 - Cancel/replace on range price drift and partial-fill tracking
-- Fee-aware risk controls (maker/taker fee deduction + max-open-position guard)
-- Paper mode toggle for dry runs
-- Profit computation and throttled CSV logging
-- Periodic market refresh, REST orderbook fallback, and open-order polling
+- Fee-aware risk controls + paper mode toggle
+- Profit CSV logging + open-order polling
 
 ## Prerequisites
 
@@ -40,10 +52,9 @@ export KALSHI_PRIVATE_KEY_PATH="./kalshi-key.pem"
 ```
 
 Live submission is enabled by default (`ENABLE_PAPER_EXECUTION = false` in `src/config.hpp`).
-To dry-run without sending orders, set `ENABLE_PAPER_EXECUTION` to `true` and rebuild.
+Set it to `true` and rebuild for a dry run.
 
 ## Notes
 
 - Dependencies `nlohmann_json`, `websocketpp`, and `asio` are fetched by CMake.
-- Orders use Kalshi V2 event-market endpoints with `bid`/`ask` book sides and dollar prices.
 - Size/risk knobs: `ORDER_SIZE`, `MIN_NET_EDGE_CENTS`, `MAX_OPEN_POSITIONS` in `src/config.hpp`.

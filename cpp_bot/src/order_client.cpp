@@ -1,34 +1,30 @@
 #include "order_client.hpp"
 
 #include <cmath>
+#include <cstdio>
 #include <iomanip>
 #include <sstream>
 
-#include "auth.hpp"
 #include "config.hpp"
 
 namespace {
 std::string cents_to_dollars(int cents) {
-  std::ostringstream oss;
-  oss << std::fixed << std::setprecision(4) << (static_cast<double>(cents) / 100.0);
-  return oss.str();
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%.4f", static_cast<double>(cents) / 100.0);
+  return buf;
 }
 
 std::string count_fp(int count) {
-  std::ostringstream oss;
-  oss << std::fixed << std::setprecision(2) << static_cast<double>(count);
-  return oss.str();
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%.2f", static_cast<double>(count));
+  return buf;
 }
 
 const char* book_side_str(BookSide side) { return side == BookSide::Bid ? "bid" : "ask"; }
 
 double parse_fp(const nlohmann::json& j, const char* key, double fallback = 0.0) {
-  if (!j.contains(key)) {
-    return fallback;
-  }
-  if (j[key].is_number()) {
-    return j[key].get<double>();
-  }
+  if (!j.contains(key)) return fallback;
+  if (j[key].is_number()) return j[key].get<double>();
   if (j[key].is_string()) {
     try {
       return std::stod(j[key].get<std::string>());
@@ -40,14 +36,14 @@ double parse_fp(const nlohmann::json& j, const char* key, double fallback = 0.0)
 }
 
 int dollars_to_cents(const nlohmann::json& j, const char* key) {
-  const double dollars = parse_fp(j, key, 0.0);
-  return static_cast<int>(std::lround(dollars * 100.0));
+  return static_cast<int>(std::lround(parse_fp(j, key, 0.0) * 100.0));
 }
 
 OrderSubmitResult parse_create_response(const HttpResponse& resp, const std::string& client_order_id) {
   OrderSubmitResult out;
   out.status = resp.status;
   out.client_order_id = client_order_id;
+  out.http_elapsed_ns = resp.elapsed_ns;
   if ((resp.status == 200 || resp.status == 201) && resp.json) {
     const auto& root = *resp.json;
     const auto& o = root.contains("order") ? root["order"] : root;
@@ -61,17 +57,11 @@ OrderSubmitResult parse_create_response(const HttpResponse& resp, const std::str
   if (resp.json && resp.json->contains("error")) {
     out.error = (*resp.json)["error"].value("message", out.error);
   }
-  // Idempotent replay: conflict with existing client_order_id is treated as success path by caller
-  // via get_order if needed.
   return out;
 }
-}  // namespace
 
-OrderClient::OrderClient(HttpClient& http, std::string key_id, std::string private_key_path)
-    : http_(http), key_id_(std::move(key_id)), private_key_path_(std::move(private_key_path)) {}
-
-OrderSubmitResult OrderClient::create_order(const OrderSubmitRequest& req) {
-  nlohmann::json body{
+nlohmann::json order_body(const OrderSubmitRequest& req) {
+  return nlohmann::json{
       {"ticker", req.ticker},
       {"side", book_side_str(req.side)},
       {"count", count_fp(req.count)},
@@ -81,38 +71,39 @@ OrderSubmitResult OrderClient::create_order(const OrderSubmitRequest& req) {
       {"client_order_id", req.client_order_id},
       {"post_only", false},
   };
+}
+}  // namespace
 
-  auto headers = get_auth_headers(key_id_, private_key_path_, "POST", config::ORDERS_PATH);
+OrderClient::OrderClient(HttpClient& http, AuthSigner& signer) : http_(http), signer_(signer) {}
+
+void OrderClient::warm_connections() {
+  auto headers = signer_.sign("GET", "/trade-api/v2/exchange/status");
+  http_.warm(std::string(config::API_BASE) + "/exchange/status", headers);
+  // Also warm the orders host path with an OPTIONS-less GET of balance if available.
+  auto bal = signer_.sign("GET", "/trade-api/v2/portfolio/balance");
+  http_.warm(std::string(config::API_BASE) + "/portfolio/balance", bal);
+}
+
+OrderSubmitResult OrderClient::create_order(const OrderSubmitRequest& req) {
+  const auto body = order_body(req).dump();
+  auto headers = signer_.sign("POST", config::ORDERS_PATH);
   const std::string url = std::string(config::API_BASE) + "/portfolio/events/orders";
-  auto resp = http_.request("POST", url, headers, body.dump(), config::HTTP_TIMEOUT_MS);
+  auto resp = http_.request("POST", url, headers, body, config::HTTP_TIMEOUT_MS);
   return parse_create_response(resp, req.client_order_id);
 }
 
 std::vector<OrderSubmitResult> OrderClient::create_orders(const std::vector<OrderSubmitRequest>& reqs) {
-  if (reqs.empty()) {
-    return {};
-  }
-  if (reqs.size() == 1) {
-    return {create_order(reqs.front())};
-  }
+  if (reqs.empty()) return {};
+  if (reqs.size() == 1) return {create_order(reqs.front())};
 
   nlohmann::json orders = nlohmann::json::array();
   for (const auto& req : reqs) {
-    orders.push_back({
-        {"ticker", req.ticker},
-        {"side", book_side_str(req.side)},
-        {"count", count_fp(req.count)},
-        {"price", cents_to_dollars(req.price_cents)},
-        {"time_in_force", "good_till_canceled"},
-        {"self_trade_prevention_type", "taker_at_cross"},
-        {"client_order_id", req.client_order_id},
-        {"post_only", false},
-    });
+    orders.push_back(order_body(req));
   }
   nlohmann::json body{{"orders", orders}};
 
   const std::string path = std::string(config::ORDERS_PATH) + "/batched";
-  auto headers = get_auth_headers(key_id_, private_key_path_, "POST", path);
+  auto headers = signer_.sign("POST", path);
   const std::string url = std::string(config::API_BASE) + "/portfolio/events/orders/batched";
   auto resp = http_.request("POST", url, headers, body.dump(), config::HTTP_TIMEOUT_MS);
 
@@ -126,9 +117,9 @@ std::vector<OrderSubmitResult> OrderClient::create_orders(const std::vector<Orde
       OrderSubmitResult r;
       r.client_order_id = reqs[i].client_order_id;
       r.status = resp.status;
+      r.http_elapsed_ns = resp.elapsed_ns;
       if (i < arr.size()) {
         const auto& item = arr[i];
-        // Batch responses may wrap each entry as {order: {...}} or {error: ...}
         if (item.contains("error")) {
           r.ok = false;
           r.error = item["error"].is_string() ? item["error"].get<std::string>()
@@ -149,9 +140,26 @@ std::vector<OrderSubmitResult> OrderClient::create_orders(const std::vector<Orde
     return results;
   }
 
-  // Fallback: sequential submits if batch endpoint rejects.
+  // Fallback: parallel individual creates (still one RSA each, but concurrent RTT).
+  std::vector<std::tuple<std::string, std::string, HeaderMap, std::string>> multi;
+  multi.reserve(reqs.size());
+  std::vector<std::string> bodies;
+  bodies.reserve(reqs.size());
   for (const auto& req : reqs) {
-    results.push_back(create_order(req));
+    bodies.push_back(order_body(req).dump());
+    auto h = signer_.sign("POST", config::ORDERS_PATH);
+    multi.emplace_back("POST", std::string(config::API_BASE) + "/portfolio/events/orders", std::move(h),
+                       bodies.back());
+  }
+  // Careful: bodies.back() references invalidated if vector grows — already reserved, OK.
+  // But we moved strings into multi by copying bodies.back() at emplace — actually we pass
+  // bodies.back() which copies into tuple. Good.
+
+  // Fix: the tuple stores a copy of the string from bodies.back() at construction time.
+  auto resps = http_.request_multi(multi, config::HTTP_TIMEOUT_MS);
+  results.clear();
+  for (size_t i = 0; i < reqs.size(); ++i) {
+    results.push_back(parse_create_response(resps[i], reqs[i].client_order_id));
   }
   return results;
 }
@@ -160,30 +168,20 @@ OrderCancelResult OrderClient::cancel_order(const std::string& order_id,
                                             const std::string& market_ticker) {
   OrderCancelResult out;
   const std::string path = std::string(config::ORDERS_PATH) + "/" + order_id;
-  auto headers = get_auth_headers(key_id_, private_key_path_, "DELETE", path);
+  auto headers = signer_.sign("DELETE", path);
   std::string url = std::string(config::API_BASE) + "/portfolio/events/orders/" + order_id;
   if (!market_ticker.empty()) {
     url += "?market_ticker=" + market_ticker;
   }
   auto resp = http_.request("DELETE", url, headers, "", config::HTTP_TIMEOUT_MS);
   out.status = resp.status;
-  if (resp.status == 200 || resp.status == 201) {
+  if (resp.status == 200 || resp.status == 201 || resp.status == 404) {
     out.ok = true;
-    if (resp.json) {
-      out.reduced_by = parse_fp(*resp.json, "reduced_by");
-    }
-    return out;
-  }
-  // Already gone / fully filled.
-  if (resp.status == 404) {
-    out.ok = true;
-    out.error = "already_gone";
+    if (resp.json) out.reduced_by = parse_fp(*resp.json, "reduced_by");
+    if (resp.status == 404) out.error = "already_gone";
     return out;
   }
   out.error = resp.body;
-  if (resp.json && resp.json->contains("error")) {
-    out.error = (*resp.json)["error"].value("message", out.error);
-  }
   return out;
 }
 
@@ -197,7 +195,7 @@ OrderAmendResult OrderClient::amend_order(const std::string& order_id, const Ord
       {"count", count_fp(req.count)},
       {"client_order_id", req.client_order_id},
   };
-  auto headers = get_auth_headers(key_id_, private_key_path_, "POST", path);
+  auto headers = signer_.sign("POST", path);
   const std::string url =
       std::string(config::API_BASE) + "/portfolio/events/orders/" + order_id + "/amend";
   auto resp = http_.request("POST", url, headers, body.dump(), config::HTTP_TIMEOUT_MS);
@@ -212,16 +210,13 @@ OrderAmendResult OrderClient::amend_order(const std::string& order_id, const Ord
     return out;
   }
   out.error = resp.body;
-  if (resp.json && resp.json->contains("error")) {
-    out.error = (*resp.json)["error"].value("message", out.error);
-  }
   return out;
 }
 
 OrderStatusResult OrderClient::get_order(const std::string& order_id) {
   OrderStatusResult out;
   const std::string path = std::string(config::GET_ORDER_PATH_PREFIX) + order_id;
-  auto headers = get_auth_headers(key_id_, private_key_path_, "GET", path);
+  auto headers = signer_.sign("GET", path);
   const std::string url = std::string(config::API_BASE) + "/portfolio/orders/" + order_id;
   auto resp = http_.request("GET", url, headers, "", config::HTTP_TIMEOUT_MS);
   out.status = resp.status;

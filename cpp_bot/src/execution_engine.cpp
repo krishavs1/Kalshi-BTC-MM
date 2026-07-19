@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "config.hpp"
+#include "latency.hpp"
 
 namespace {
 const char* state_name(OrderLifecycleState state) {
@@ -108,8 +109,12 @@ void OrderStateMachine::on_replace_ack(bool accepted) {
 
 void OrderStateMachine::reset_to_idle() { state_ = OrderLifecycleState::Idle; }
 
-ExecutionEngine::ExecutionEngine(RiskConfig config, OrderClient* order_client)
-    : config_(config), orders_(order_client) {}
+ExecutionEngine::ExecutionEngine(RiskConfig config, OrderClient* order_client,
+                                 LatencyStats* decide_stats, LatencyStats* submit_stats)
+    : config_(config),
+      orders_(order_client),
+      decide_stats_(decide_stats),
+      submit_stats_(submit_stats) {}
 
 SyntheticSignal ExecutionEngine::build_signal(const ProfitPair& profits, int64_t now_us) const {
   SyntheticSignal signal;
@@ -163,11 +168,16 @@ std::string ExecutionEngine::make_client_order_id(const std::string& set_id, int
 }
 
 bool ExecutionEngine::submit_set(WorkingSetState& ws, const std::vector<LegIntent>& legs,
-                                 int64_t now_us) {
+                                 int64_t now_us, int64_t ws_recv_ns) {
   ws.orders.clear();
   ws.last_action_ts_us = now_us;
 
   if (config_.paper_mode || orders_ == nullptr) {
+    const int64_t t_submit = mono_ns();
+    if (ws_recv_ns > 0 && submit_stats_) {
+      submit_stats_->record_ns(t_submit - ws_recv_ns);
+      submit_stats_->maybe_report();
+    }
     for (size_t i = 0; i < legs.size(); ++i) {
       RestingOrder o;
       o.order_id = "paper-" + ws.set_id + "-" + std::to_string(i);
@@ -200,13 +210,29 @@ bool ExecutionEngine::submit_set(WorkingSetState& ws, const std::vector<LegInten
     reqs.push_back(req);
   }
 
+  const int64_t t_submit = mono_ns();
+  if (ws_recv_ns > 0 && submit_stats_) {
+    // Time from WS frame to HTTP kickoff (local path — should be µs-scale).
+    submit_stats_->record_ns(t_submit - ws_recv_ns);
+  }
   auto results = orders_->create_orders(reqs);
+  if (submit_stats_) {
+    submit_stats_->maybe_report();
+  }
+  if (!results.empty()) {
+    std::cout << "[latency] http_batch_us=" << (results.front().http_elapsed_ns / 1000.0);
+    if (ws_recv_ns > 0) {
+      std::cout << " ws_to_http_done_us=" << ((mono_ns() - ws_recv_ns) / 1000.0);
+    }
+    std::cout << "\n";
+  }
+
   bool any_ok = false;
   for (size_t i = 0; i < results.size(); ++i) {
     const auto& r = results[i];
     if (!r.ok || r.order_id.empty()) {
       std::cout << "[live] submit FAIL " << ws.set_id << " leg=" << i << " err=" << r.error
-                << " status=" << r.status << "\n";
+                << " status=" << r.status << " http_us=" << (r.http_elapsed_ns / 1000.0) << "\n";
       continue;
     }
     RestingOrder o;
@@ -226,14 +252,13 @@ bool ExecutionEngine::submit_set(WorkingSetState& ws, const std::vector<LegInten
     any_ok = true;
     std::cout << "[live] submit OK " << ws.set_id << " " << o.ticker << " order_id=" << o.order_id
               << " px=" << o.price_cents << "c fill=" << o.fill_count << "/" << o.initial_count
-              << "\n";
+              << " http_us=" << (r.http_elapsed_ns / 1000.0) << "\n";
   }
 
   if (!any_ok) {
     return false;
   }
 
-  // If only some legs landed, cancel survivors and reject the set to avoid naked risk.
   if (ws.orders.size() != legs.size()) {
     std::cout << "[live] partial-leg submit on " << ws.set_id << " — cancelling survivors\n";
     cancel_set(ws);
@@ -381,51 +406,156 @@ void ExecutionEngine::refresh_set_lifecycle(WorkingSetState& ws) {
 void ExecutionEngine::evaluate_set(const std::string& set_id, const MarketSet& markets,
                                    const ProfitPair& profits, const Orderbook& range_ob,
                                    const Orderbook& lower_ob, const Orderbook& higher_ob,
-                                   int64_t now_us) {
-  std::lock_guard<std::mutex> lock(mu_);
-
-  auto sm_it = state_machines_.find(set_id);
-  if (sm_it == state_machines_.end()) {
-    sm_it = state_machines_.emplace(set_id, OrderStateMachine(set_id)).first;
-  }
-  auto ws_it = working_.find(set_id);
-  if (ws_it == working_.end()) {
-    WorkingSetState ws;
-    ws.set_id = set_id;
-    ws_it = working_.emplace(set_id, std::move(ws)).first;
-  }
-
-  auto& sm = sm_it->second;
-  auto& ws = ws_it->second;
-
-  const SyntheticSignal signal = build_signal(profits, now_us);
-  const int open = open_positions();
-  const bool allow_new = open < config_.max_open_positions;
-
-  bool needs_replace = false;
+                                   int64_t now_us, int64_t ws_recv_ns) {
+  ExecutionDecision decision;
+  SyntheticSignal signal;
   std::vector<LegIntent> desired_legs;
-  if (signal.actionable && signal.side != SignalSide::None) {
-    desired_legs = build_legs(markets, range_ob, lower_ob, higher_ob, signal.side, config_.order_size);
-    if (!desired_legs.empty()) {
-      const int desired_range_px = desired_legs.front().price_cents;
-      if ((sm.state() == OrderLifecycleState::Working ||
-           sm.state() == OrderLifecycleState::PartialFilled) &&
-          ws.side == signal.side &&
-          std::abs(desired_range_px - ws.target_range_price_cents) >= config_.replace_min_tick_change) {
-        needs_replace = true;
+  LegIntent replace_leg{};
+  bool do_submit = false;
+  bool do_replace = false;
+  bool do_cancel = false;
+
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+
+    auto sm_it = state_machines_.find(set_id);
+    if (sm_it == state_machines_.end()) {
+      sm_it = state_machines_.emplace(set_id, OrderStateMachine(set_id)).first;
+    }
+    auto ws_it = working_.find(set_id);
+    if (ws_it == working_.end()) {
+      WorkingSetState ws;
+      ws.set_id = set_id;
+      ws_it = working_.emplace(set_id, std::move(ws)).first;
+    }
+
+    auto& sm = sm_it->second;
+    auto& ws = ws_it->second;
+
+    signal = build_signal(profits, now_us);
+    const int open = open_positions();
+    const bool allow_new = open < config_.max_open_positions;
+
+    bool needs_replace = false;
+    if (signal.actionable && signal.side != SignalSide::None) {
+      desired_legs =
+          build_legs(markets, range_ob, lower_ob, higher_ob, signal.side, config_.order_size);
+      if (!desired_legs.empty()) {
+        const int desired_range_px = desired_legs.front().price_cents;
+        if ((sm.state() == OrderLifecycleState::Working ||
+             sm.state() == OrderLifecycleState::PartialFilled) &&
+            ws.side == signal.side &&
+            std::abs(desired_range_px - ws.target_range_price_cents) >=
+                config_.replace_min_tick_change) {
+          needs_replace = true;
+        }
       }
     }
+
+    decision = sm.on_signal(signal, allow_new, needs_replace);
+    do_submit = decision.should_submit;
+    do_replace = decision.should_replace;
+    do_cancel = decision.should_cancel;
+
+    if (do_submit) {
+      if (desired_legs.empty()) {
+        desired_legs =
+            build_legs(markets, range_ob, lower_ob, higher_ob, signal.side, config_.order_size);
+      }
+      ws.side = signal.side;
+      ws.target_range_price_cents = desired_legs.empty() ? 0 : desired_legs.front().price_cents;
+    }
+    if (do_replace && !desired_legs.empty()) {
+      replace_leg = desired_legs.front();
+    }
+
+    if (ws_recv_ns > 0 && decide_stats_) {
+      decide_stats_->record_ns(mono_ns() - ws_recv_ns);
+      decide_stats_->maybe_report();
+    }
   }
 
-  ExecutionDecision decision = sm.on_signal(signal, allow_new, needs_replace);
-
-  if (decision.should_submit) {
-    if (desired_legs.empty()) {
-      desired_legs = build_legs(markets, range_ob, lower_ob, higher_ob, signal.side, config_.order_size);
+  // Network I/O outside the decision lock.
+  if (do_submit) {
+    std::vector<OrderSubmitRequest> reqs;
+    reqs.reserve(desired_legs.size());
+    for (size_t i = 0; i < desired_legs.size(); ++i) {
+      OrderSubmitRequest req;
+      req.ticker = desired_legs[i].ticker;
+      req.side = desired_legs[i].side;
+      req.price_cents = desired_legs[i].price_cents;
+      req.count = desired_legs[i].count;
+      req.client_order_id = make_client_order_id(set_id, static_cast<int>(i), now_us);
+      reqs.push_back(std::move(req));
     }
-    ws.side = signal.side;
-    ws.target_range_price_cents = desired_legs.empty() ? 0 : desired_legs.front().price_cents;
-    const bool ok = submit_set(ws, desired_legs, now_us);
+
+    std::vector<OrderSubmitResult> results;
+    const int64_t t_submit = mono_ns();
+    if (ws_recv_ns > 0 && submit_stats_) {
+      submit_stats_->record_ns(t_submit - ws_recv_ns);
+      submit_stats_->maybe_report();
+    }
+
+    if (config_.paper_mode || orders_ == nullptr) {
+      results.resize(reqs.size());
+      for (size_t i = 0; i < reqs.size(); ++i) {
+        results[i].ok = true;
+        results[i].order_id = "paper-" + set_id + "-" + std::to_string(i);
+        results[i].client_order_id = reqs[i].client_order_id;
+        results[i].remaining_count = static_cast<double>(reqs[i].count);
+      }
+    } else {
+      results = orders_->create_orders(reqs);
+      if (!results.empty()) {
+        std::cout << "[latency] http_batch_us=" << (results.front().http_elapsed_ns / 1000.0);
+        if (ws_recv_ns > 0) {
+          std::cout << " ws_to_http_done_us=" << ((mono_ns() - ws_recv_ns) / 1000.0);
+        }
+        std::cout << "\n";
+      }
+    }
+
+    std::lock_guard<std::mutex> lock(mu_);
+    auto& sm = state_machines_.at(set_id);
+    auto& ws = working_.at(set_id);
+    ws.orders.clear();
+    ws.last_action_ts_us = now_us;
+    bool any_ok = false;
+    for (size_t i = 0; i < results.size() && i < desired_legs.size(); ++i) {
+      const auto& r = results[i];
+      if (!r.ok || r.order_id.empty()) {
+        std::cout << "[live] submit FAIL " << set_id << " leg=" << i << " err=" << r.error << "\n";
+        continue;
+      }
+      RestingOrder o;
+      o.order_id = r.order_id;
+      o.client_order_id = r.client_order_id;
+      o.ticker = desired_legs[i].ticker;
+      o.side = desired_legs[i].side;
+      o.price_cents = desired_legs[i].price_cents;
+      o.initial_count = desired_legs[i].count;
+      o.fill_count = r.fill_count;
+      o.remaining_count = r.remaining_count > 0
+                             ? r.remaining_count
+                             : static_cast<double>(desired_legs[i].count) - r.fill_count;
+      o.is_range_leg = desired_legs[i].is_range_leg;
+      o.terminal = o.remaining_count <= 1e-9;
+      ws.orders.push_back(o);
+      order_to_set_[o.order_id] = set_id;
+      any_ok = true;
+      if (config_.paper_mode) {
+        std::cout << "[paper] submit " << set_id << " " << o.ticker << " px=" << o.price_cents
+                  << "c\n";
+      } else {
+        std::cout << "[live] submit OK " << set_id << " " << o.ticker << " order_id=" << o.order_id
+                  << "\n";
+      }
+    }
+    bool ok = any_ok && ws.orders.size() == desired_legs.size();
+    if (any_ok && !ok) {
+      cancel_set(ws);
+      ok = false;
+    }
     sm.on_submit_ack(ok);
     ws.state = sm.state();
     if (ok) {
@@ -435,14 +565,22 @@ void ExecutionEngine::evaluate_set(const std::string& set_id, const MarketSet& m
     }
   }
 
-  if (decision.should_replace && !desired_legs.empty()) {
-    const bool ok = replace_range(ws, desired_legs.front());
+  if (do_replace) {
+    // Amend still needs lock around state; network happens inside replace_range.
+    // Copy order id out, unlock for network would be nicer — keep simple for now.
+    std::lock_guard<std::mutex> lock(mu_);
+    auto& sm = state_machines_.at(set_id);
+    auto& ws = working_.at(set_id);
+    const bool ok = replace_range(ws, replace_leg);
     sm.on_replace_ack(ok);
     ws.state = sm.state();
     refresh_set_lifecycle(ws);
   }
 
-  if (decision.should_cancel) {
+  if (do_cancel) {
+    std::lock_guard<std::mutex> lock(mu_);
+    auto& sm = state_machines_.at(set_id);
+    auto& ws = working_.at(set_id);
     const bool ok = cancel_set(ws);
     if (ok) {
       sm.on_cancel_ack();
