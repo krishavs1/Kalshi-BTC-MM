@@ -8,6 +8,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+find_package(OpenSSL REQUIRED)
+find_package(CURL REQUIRED)
+find_package(Threads REQUIRED)
+
 include(FetchContent)
 
 FetchContent_Declare(
@@ -30,15 +34,12 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(nlohmann_json websocketpp asio)
 
-find_package(OpenSSL REQUIRED)
-find_package(CURL REQUIRED)
-find_package(Threads REQUIRED)
-
 add_executable(kalshi_bot_cpp
   src/main.cpp
   src/auth.cpp
   src/http_client.cpp
   src/market_finder.cpp
+  src/order_client.cpp
   src/execution_engine.cpp
   src/profit_calculator.cpp
   src/smart_monitor.cpp

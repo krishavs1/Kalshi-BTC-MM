@@ -43,15 +43,44 @@ enum class OrderLifecycleState {
   Idle = 0,
   PendingSubmit,
   Working,
+  PartialFilled,
   PendingCancel,
+  PendingReplace,
   Filled,
   Rejected,
   Cancelled,
 };
 
+enum class BookSide {
+  Bid = 0,  // buy YES
+  Ask,      // sell YES / buy NO
+};
+
+struct LegIntent {
+  std::string ticker;
+  BookSide side{BookSide::Bid};
+  int price_cents{0};  // YES-book price in cents
+  int count{1};
+  bool is_range_leg{false};
+};
+
+struct RestingOrder {
+  std::string order_id;
+  std::string client_order_id;
+  std::string ticker;
+  BookSide side{BookSide::Bid};
+  int price_cents{0};
+  int initial_count{0};
+  double fill_count{0.0};
+  double remaining_count{0.0};
+  bool is_range_leg{false};
+  bool terminal{false};
+};
+
 struct ExecutionDecision {
   bool should_submit{false};
   bool should_cancel{false};
+  bool should_replace{false};
   std::string reason;
 };
 
